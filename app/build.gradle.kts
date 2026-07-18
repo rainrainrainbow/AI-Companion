@@ -86,20 +86,20 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
-    // Filament 3D渲染
-    implementation("com.google.android.filament:filament-android:1.58.0")
-    implementation("com.google.android.filament:gltfio-android:1.58.0")
-    implementation("com.google.android.filament:filament-utils-android:1.58.0")
+    // Filament 3D rendering
+    implementation("com.google.android.filament:filament-android:1.71.5")
+    implementation("com.google.android.filament:gltfio-android:1.71.5")
+    implementation("com.google.android.filament:filament-utils-android:1.71.5")
 
-    // 本地数据库
+    // Local database
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
     annotationProcessor("androidx.room:room-compiler:2.6.1")
 
-    // 数据序列化
+    // Data serialization
     implementation("com.google.code.gson:gson:2.11.0")
 
-    // 权限管理
+    // Permission management
     implementation("com.google.accompanist:accompanist-permissions:0.35.1-alpha")
 
     // Debug
