@@ -137,9 +137,11 @@ fun MainScreen(
                                 else viewModel.startVoiceInput()
                             },
                             modifier = Modifier.size(40.dp),
-                            containerColor = if (uiState.isListening)
-                                MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.surfaceVariant
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = if (uiState.isListening)
+                                    MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.surfaceVariant
+                            )
                         ) {
                             Icon(
                                 if (uiState.isListening) Icons.Default.Mic else Icons.Default.MicNone,
@@ -175,7 +177,8 @@ fun MainScreen(
                         FilledIconButton(
                             onClick = { viewModel.sendMessage() },
                             modifier = Modifier.size(40.dp),
-                            enabled = uiState.inputText.isNotBlank() && !uiState.isThinking
+                            enabled = uiState.inputText.isNotBlank() && !uiState.isThinking,
+                            colors = IconButtonDefaults.filledIconButtonColors()
                         ) {
                             Icon(Icons.Default.Send, "发送")
                         }
@@ -446,7 +449,7 @@ fun SettingsPanel(
             Spacer(Modifier.height(16.dp))
 
             Button(
-                onClick = { viewModel.startFineTune(/*context*/) },
+                onClick = { viewModel.startFineTune(context = LocalContext.current) },
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(Icons.Default.Tune, null)
