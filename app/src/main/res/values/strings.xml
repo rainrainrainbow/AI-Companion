@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">星璃 AI伴侣</string>
+    <string name="greeting_morning">早安~ 今天新的一天开始了！</string>
+    <string name="greeting_night">夜深了，该休息了哦~</string>
+    <string name="loading_model">正在加载AI模型...</string>
+    <string name="thinking">星璃正在思考...</string>
+    <string name="mic_permission">需要麦克风权限才能使用语音输入</string>
+</resources>

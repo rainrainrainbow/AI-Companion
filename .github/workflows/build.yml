@@ -1,0 +1,170 @@
+name: Build AI Companion APK
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type (debug/release)'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+
+env:
+  BUILD_TYPE: ${{ inputs.build_type || 'debug' }}
+
+jobs:
+  build-native:
+    name: Build Native Libraries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27b
+          add-to-path: false
+
+      - name: Cache Native Build
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/src/main/jniLibs/
+            libs/
+          key: native-${{ runner.os }}-${{ hashFiles('app/src/main/cpp/**') }}
+
+      - name: Build llama.cpp for Android
+        run: |
+          chmod +x scripts/build_native.sh
+          ./scripts/build_native.sh
+
+      - name: Upload Native Libs
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-libs
+          path: app/src/main/jniLibs/
+
+  build-apk:
+    name: Build APK
+    needs: build-native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Native Libs
+        uses: actions/download-artifact@v4
+        with:
+          name: native-libs
+          path: app/src/main/jniLibs/
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: wrapper
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+
+      - name: Build APK
+        run: |
+          if [ "$BUILD_TYPE" = "release" ]; then
+            ./gradlew assembleRelease
+          else
+            ./gradlew assembleDebug
+          fi
+
+      - name: Sign APK (Release only)
+        if: env.BUILD_TYPE == 'release'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > keystore.jks
+          ./gradlew signReleaseApk
+          rm keystore.jks
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-companion-${{ env.BUILD_TYPE }}.apk
+          path: app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+
+      - name: Create Release
+        if: env.BUILD_TYPE == 'release' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: "AI伴侣 v${{ github.run_number }}"
+          body: |
+            ## AI伴侣 星璃 自动构建
+            
+            ### 构建信息
+            - 构建类型: Release
+            - 构建时间: ${{ github.event.repository.updated_at }}
+            
+            ### 安装说明
+            1. 下载APK文件
+            2. 允许安装未知来源应用
+            3. 首次启动需要下载模型文件（约300MB）
+            
+            ### 更新日志
+            - 自动构建版本
+          files: |
+            app/build/outputs/apk/**/*.apk
+          draft: false
+          prerelease: false
+
+  build-model-downloader:
+    name: Build Model Download Helper
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create Model Download Script
+        run: |
+          cat > scripts/download_models.sh << 'EOF'
+          #!/bin/bash
+          # 下载Qwen2.5-0.5B GGUF模型
+          MODEL_DIR="app/src/main/assets/models"
+          mkdir -p "$MODEL_DIR"
+          
+          echo "Downloading Qwen2.5-0.5B-q4_k_m.gguf..."
+          wget -c -O "$MODEL_DIR/qwen2.5-0.5b-q4_k_m.gguf" \
+            "https://huggingface.co/Qwen/Qwen2.5-0.5B-GGUF/resolve/main/qwen2.5-0.5b-q4_k_m.gguf"
+          
+          echo "Downloading whisper base model..."
+          wget -c -O "$MODEL_DIR/ggml-base.bin" \
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
+          
+          echo "Models downloaded!"
+          EOF
+          chmod +x scripts/download_models.sh
+
+      - name: Upload Model Script
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-download-script
+          path: scripts/download_models.sh

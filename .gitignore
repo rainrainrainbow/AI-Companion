@@ -1,0 +1,33 @@
+# Gradle
+.gradle/
+build/
+app/build/
+local.properties
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Native
+app/src/main/jniLibs/
+app/src/main/cpp/libs/
+app/src/main/cpp/build/
+
+# Model files (too large for git)
+*.gguf
+*.bin
+*.ggml
+
+# Keystore
+*.jks
+*.keystore
+keystore.jks
+
+# Environment
+.env
+*.env.local
+
+# Logs
+*.log
+crashlytics-*
