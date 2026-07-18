@@ -1,19 +1,14 @@
 package com.ai.companion.core.avatar
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.opengl.GLSurfaceView
 import android.util.Log
-import com.google.android.filament.*
-import com.google.android.filament.gltfio.*
-import java.io.File
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import javax.microedition.khronos.egl.EGLConfig
+import javax.microedition.khronos.opengles.GL10
 
 /**
- * 3D虚拟形象引擎 - 使用Google Filament渲染
- * 支持GLTF模型加载、表情动画、动作过渡
+ * 3D虚拟形象引擎 - 简化版，使用GLSurfaceView直接渲染
+ * 实际3D渲染在后续版本中完善
  */
 class Avatar3DEngine(private val context: Context) {
 
@@ -21,301 +16,174 @@ class Avatar3DEngine(private val context: Context) {
         private const val TAG = "Avatar3DEngine"
     }
 
-    private var engine: Engine? = null
-    private var scene: Scene? = null
-    private var view: View? = null
-    private var renderer: Renderer? = null
-    private var camera: Camera? = null
-    private var materialProvider: MaterialProvider? = null
-    private var assetLoader: AssetLoader? = null
-    private var asset: FilamentAsset? = null
-
-    // 表情混合参数
-    private val blendShapeWeights = FloatArray(50)
-
-    // 动画状态
-    private var currentAnimation = AvatarAnimation.IDLE
-    private var animationProgress = 0f
-    private var isBlinking = false
-    private var blinkTimer = 0f
-
-    // 渲染表面
     private var glSurfaceView: GLSurfaceView? = null
+    private var currentEmotion = "NEUTRAL"
+    private var isCurrentlySpeaking = false
 
     fun init(surfaceView: GLSurfaceView) {
         glSurfaceView = surfaceView
 
-        engine = Engine.create()
-        scene = engine?.createScene()
-        renderer = engine?.createRenderer()
-        view = engine?.createView()
-
-        // 设置相机
-        camera = engine?.createCamera()
-        camera?.setProjection(
-            Camera.Projection.PERSPECTIVE,
-            45.0,           // FOV
-            1.0f,           // aspect (will be set properly later)
-            0.1,            // near
-            100.0           // far
-        )
-        camera?.lookAt(
-            0.0, 1.5, 3.0,   // 相机位置
-            0.0, 1.2, 0.0,   // 看向目标
-            0.0, 1.0, 0.0    // 上方向
-        )
-        view?.setCamera(camera)
-
-        // 设置场景背景
-        scene?.setSkybox {
-            // 创建柔和渐变背景
-        }
-
-        // 初始化光照
-        setupLighting()
-
-        // 设置渲染表面
+        surfaceView.setEGLContextClientVersion(2)
         surfaceView.setRenderer(object : GLSurfaceView.Renderer {
-            override fun onSurfaceCreated(gl: javax.microedition.khronos.opengles.GL10?, config: javax.microedition.khronos.egl.EGLConfig?) {
-                // 引擎初始化已在前面完成
+            override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+                gl?.glClearColor(0.95f, 0.90f, 0.95f, 1.0f)
             }
 
-            override fun onSurfaceChanged(gl: javax.microedition.khronos.opengles.GL10?, width: Int, height: Int) {
-                view?.setViewport(Rect(0, 0, width, height))
-                camera?.setProjection(
-                    Camera.Projection.PERSPECTIVE,
-                    45.0,
-                    width.toFloat() / height.toFloat(),
-                    0.1,
-                    100.0
-                )
+            override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
+                gl?.glViewport(0, 0, width, height)
+                gl?.glMatrixMode(GL10.GL_PROJECTION)
+                gl?.glLoadIdentity()
+                val ratio = width.toFloat() / height.toFloat()
+                gl?.glFrustumf(-ratio, ratio, -1f, 1f, 1.5f, 10f)
+                gl?.glMatrixMode(GL10.GL_MODELVIEW)
             }
 
-            override fun onDrawFrame(gl: javax.microedition.khronos.opengles.GL10?) {
-                updateAnimation()
-                renderer?.beginFrame(glSurfaceView)
-                renderer?.render(view)
-                renderer?.endFrame()
+            override fun onDrawFrame(gl: GL10?) {
+                gl?.glClear(GL10.GL_COLOR_BUFFER_BIT or GL10.GL_DEPTH_BUFFER_BIT)
+                gl?.glLoadIdentity()
+                gl?.glTranslatef(0f, 0f, -3f)
+
+                // 绘制简单卡通形象（头部 - 球体近似）
+                drawAvatar(gl)
             }
         })
         surfaceView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
     }
 
-    private fun setupLighting() {
-        // 环境光
-        val indirectLight = IndirectLight.Builder()
-            .build(engine!!)
-        scene?.setIndirectLight(indirectLight)
+    private fun drawAvatar(gl: GL10?) {
+        // 根据情绪选择颜色
+        val color = when (currentEmotion) {
+            "HAPPY" -> floatArrayOf(1.0f, 0.85f, 0.0f)  // 金色
+            "SAD" -> floatArrayOf(0.4f, 0.6f, 1.0f)     // 蓝色
+            "ANGRY" -> floatArrayOf(1.0f, 0.3f, 0.3f)   // 红色
+            "TIRED" -> floatArrayOf(0.6f, 0.6f, 0.8f)   // 灰蓝
+            "ANXIOUS" -> floatArrayOf(1.0f, 0.7f, 0.3f) // 橙色
+            "LOVING" -> floatArrayOf(1.0f, 0.4f, 0.7f)  // 粉色
+            else -> floatArrayOf(0.8f, 0.7f, 0.9f)       // 紫色
+        }
 
-        // 主光源
-        val light = EntityManager.get().create()
-        LightManager.Builder(LightManager.Type.DIRECTIONAL)
-            .color(1.0f, 0.98f, 0.95f)
-            .intensity(100000.0f)
-            .direction(1.0f, -1.0f, -1.0f)
-            .build(engine!!, light)
-        scene?.addEntity(light)
+        gl?.glColor4f(color[0], color[1], color[2], 1.0f)
+
+        // 绘制球体（头部）
+        drawSphere(gl, 0.0f, 0.3f, 0.0f, 0.25f, 16)
+
+        // 绘制身体（圆锥）
+        gl?.glColor4f(color[0] * 0.7f, color[1] * 0.7f, color[2] * 0.7f, 1.0f)
+        drawCone(gl, 0.0f, -0.3f, 0.0f, 0.2f, 0.3f, 12)
+
+        // 眼睛
+        val eyeY = 0.35f
+        val eyeOffset = 0.08f
+        gl?.glColor4f(1.0f, 1.0f, 1.0f, 1.0f)
+        drawSphere(gl, -eyeOffset, eyeY, 0.22f, 0.04f, 8)
+        drawSphere(gl, eyeOffset, eyeY, 0.22f, 0.04f, 8)
+
+        // 瞳孔
+        gl?.glColor4f(0.1f, 0.1f, 0.1f, 1.0f)
+        drawSphere(gl, -eyeOffset, eyeY, 0.24f, 0.02f, 8)
+        drawSphere(gl, eyeOffset, eyeY, 0.24f, 0.02f, 8)
+
+        // 嘴巴 - 根据情绪
+        gl?.glColor4f(0.6f, 0.3f, 0.3f, 1.0f)
+        val mouthY = 0.22f
+        if (currentEmotion == "HAPPY" || currentEmotion == "LOVING") {
+            // 微笑
+            drawArc(gl, 0.0f, mouthY, 0.23f, 0.06f, 0.04f, 8)
+        } else if (currentEmotion == "SAD") {
+            // 悲伤
+            drawArc(gl, 0.0f, mouthY - 0.03f, 0.23f, -0.04f, 0.06f, 8)
+        } else {
+            // 中性
+            drawLine(gl, -0.06f, mouthY, 0.0f, 0.06f, mouthY, 0.0f)
+        }
+
+        // 说话动画
+        if (isCurrentlySpeaking) {
+            val mouthOpen = (Math.sin(System.currentTimeMillis() / 100.0) * 0.02 + 0.02).toFloat()
+            gl?.glColor4f(0.6f, 0.3f, 0.3f, 1.0f)
+            drawSphere(gl, 0.0f, mouthY - 0.02f, 0.24f, 0.015f + mouthOpen, 6)
+        }
+    }
+
+    private fun drawSphere(gl: GL10?, cx: Float, cy: Float, cz: Float, r: Float, stacks: Int) {
+        val slices = stacks * 2
+        for (i in 0 until stacks) {
+            val lat0 = Math.PI * (-0.5 + (i.toDouble() / stacks))
+            val z0 = Math.sin(lat0).toFloat()
+            val zr0 = Math.cos(lat0).toFloat()
+
+            val lat1 = Math.PI * (-0.5 + ((i + 1).toDouble() / stacks))
+            val z1 = Math.sin(lat1).toFloat()
+            val zr1 = Math.cos(lat1).toFloat()
+
+            gl?.glBegin(GL10.GL_TRIANGLE_STRIP)
+            for (j in 0..slices) {
+                val lng = 2 * Math.PI * (j.toDouble() / slices)
+                val x = Math.cos(lng).toFloat()
+                val y = Math.sin(lng).toFloat()
+
+                gl?.glVertex3f(cx + x * zr0 * r, cy + z0 * r, cz + y * zr0 * r)
+                gl?.glVertex3f(cx + x * zr1 * r, cy + z1 * r, cz + y * zr1 * r)
+            }
+            gl?.glEnd()
+        }
+    }
+
+    private fun drawCone(gl: GL10?, cx: Float, cy: Float, cz: Float, radius: Float, height: Float, sides: Int) {
+        gl?.glBegin(GL10.GL_TRIANGLE_FAN)
+        gl?.glVertex3f(cx, cy + height, cz) // 顶点
+        for (i in 0..sides) {
+            val angle = 2 * Math.PI * (i.toDouble() / sides)
+            val x = Math.cos(angle).toFloat() * radius
+            val z = Math.sin(angle).toFloat() * radius
+            gl?.glVertex3f(cx + x, cy, cz + z)
+        }
+        gl?.glEnd()
+    }
+
+    private fun drawArc(gl: GL10?, cx: Float, cy: Float, cz: Float, width: Float, height: Float, segments: Int) {
+        gl?.glBegin(GL10.GL_LINE_STRIP)
+        for (i in 0..segments) {
+            val t = Math.PI * (i.toDouble() / segments)
+            val x = Math.cos(t).toFloat() * width
+            val y = Math.sin(t).toFloat() * height
+            gl?.glVertex3f(cx + x, cy - y, cz)
+        }
+        gl?.glEnd()
+    }
+
+    private fun drawLine(gl: GL10?, x1: Float, y1: Float, z1: Float, x2: Float, y2: Float, z2: Float) {
+        gl?.glBegin(GL10.GL_LINES)
+        gl?.glVertex3f(x1, y1, z1)
+        gl?.glVertex3f(x2, y2, z2)
+        gl?.glEnd()
     }
 
     fun loadAvatarModel(modelPath: String) {
-        try {
-            materialProvider = MaterialProvider(engine!!)
-            assetLoader = AssetLoader(engine!!, materialProvider!!, null)
-
-            val modelFile = File(modelPath)
-            if (!modelFile.exists()) {
-                Log.w(TAG, "Avatar model not found: $modelPath")
-                // 使用程序化生成的默认形象
-                createDefaultAvatar()
-                return
-            }
-
-            val buffer = modelFile.readBytes()
-            asset = assetLoader?.createAssetFromBinary(buffer)
-            asset?.root?.let { scene?.addEntity(it) }
-
-            // 获取骨骼动画
-            val animator = asset?.animator
-            if (animator != null && animator.animationCount > 0) {
-                Log.d(TAG, "Avatar loaded with ${animator.animationCount} animations")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to load avatar model", e)
-            createDefaultAvatar()
-        }
+        Log.d(TAG, "Avatar model loading skipped (using GL fallback): $modelPath")
     }
 
-    private fun createDefaultAvatar() {
-        // 使用Filament程序化生成一个简单的卡通形象
-        // 由基本几何体组合：球体(头)、圆柱体(身体)、球体(眼睛)
-        val renderableManager = engine?.renderableManager
-        val entityManager = EntityManager.get()
-
-        // 创建头部（球体）
-        val headEntity = entityManager.create()
-        RenderableManager.Builder(1)
-            .material(0, createDefaultMaterial())
-            .geometry(0, RenderableManager.PrimitiveType.TRIANGLES, createSphereMesh(0.3f, 32))
-            .build(engine!!, headEntity)
-        scene?.addEntity(headEntity)
-
-        // 创建身体（圆柱体）
-        val bodyEntity = entityManager.create()
-        RenderableManager.Builder(1)
-            .material(0, createDefaultMaterial())
-            .geometry(0, RenderableManager.PrimitiveType.TRIANGLES, createCylinderMesh(0.25f, 0.5f))
-            .build(engine!!, bodyEntity)
-        scene?.addEntity(bodyEntity)
-
-        // 转换控制
-        val headTransform = TransformManager().getInstance(headEntity)
-        // 设置头在身体上方
-        val bodyTransform = TransformManager().getInstance(bodyEntity)
-        bodyTransform?.let {
-            // 设置位置
-        }
-    }
-
-    private fun createDefaultMaterial(): MaterialInstance? {
-        // 创建默认材质（粉色/肤色）
-        return null
-    }
-
-    private fun createSphereMesh(radius: Float, segments: Int): VertexBuffer? {
-        // 生成球体顶点数据
-        return null
-    }
-
-    private fun createCylinderMesh(radius: Float, height: Float): VertexBuffer? {
-        // 生成圆柱体顶点数据
-        return null
-    }
-
-    /**
-     * 设置表情 - 基于AI情绪状态
-     */
     fun setEmotion(emotion: String) {
-        val animator = asset?.animator ?: return
-
-        // 根据情绪选择对应的动画/表情混合
-        val targetAnim = when (emotion) {
-            "HAPPY" -> AvatarAnimation.HAPPY
-            "SAD" -> AvatarAnimation.SAD
-            "ANGRY" -> AvatarAnimation.ANGRY
-            "TIRED" -> AvatarAnimation.TIRED
-            "ANXIOUS" -> AvatarAnimation.ANXIOUS
-            "LOVING" -> AvatarAnimation.LOVING
-            else -> AvatarAnimation.IDLE
-        }
-
-        // 平滑过渡到目标动画
-        currentAnimation = targetAnim
-        animationProgress = 0f
-
-        // 设置blend shape权重
-        resetBlendShapes()
-        when (emotion) {
-            "HAPPY" -> {
-                blendShapeWeights[0] = 0.8f  // smile
-                blendShapeWeights[1] = 0.3f  // brow_up
-            }
-            "SAD" -> {
-                blendShapeWeights[2] = 0.7f  // brow_down
-                blendShapeWeights[3] = 0.5f  // mouth_frown
-            }
-            "ANGRY" -> {
-                blendShapeWeights[2] = 0.9f  // brow_down
-                blendShapeWeights[4] = 0.6f  // mouth_press
-            }
-            "LOVING" -> {
-                blendShapeWeights[0] = 0.6f  // smile
-                blendShapeWeights[5] = 0.4f  // eye_soft
-            }
-        }
+        currentEmotion = emotion
     }
 
-    /**
-     * 触发说话动捕
-     */
     fun setSpeaking(speaking: Boolean) {
-        if (speaking) {
-            currentAnimation = AvatarAnimation.TALKING
-        } else {
-            currentAnimation = AvatarAnimation.IDLE
-        }
-    }
-
-    private fun resetBlendShapes() {
-        for (i in blendShapeWeights.indices) {
-            blendShapeWeights[i] = 0f
-        }
-    }
-
-    private fun updateAnimation() {
-        // 更新眨眼
-        blinkTimer += 0.016f // ~60fps
-        if (blinkTimer > 3.0f + Math.random() * 2.0f) {
-            isBlinking = true
-            blinkTimer = 0f
-        }
-        if (isBlinking) {
-            // 眨眼动画（快速闭合再张开）
-            if (blinkTimer > 0.1f) {
-                isBlinking = false
-                blinkTimer = 0f
-            }
-        }
-
-        // 空闲呼吸动画
-        if (currentAnimation == AvatarAnimation.IDLE) {
-            val breath = Math.sin(System.currentTimeMillis() / 1000.0 * 2.0) * 0.02
-            // 轻微上下浮动身体
-        }
-
-        // 动画过渡
-        if (animationProgress < 1.0f) {
-            animationProgress += 0.03f
-            if (animationProgress > 1.0f) animationProgress = 1.0f
-        }
-
-        // 更新blend shape
-        val animator = asset?.animator
-        if (animator != null) {
-            for (i in blendShapeWeights.indices) {
-                // animator.setBlendShapeWeight(...)
-            }
-        }
+        isCurrentlySpeaking = speaking
     }
 
     fun onResume() {
-        engine?.execute()
+        glSurfaceView?.onResume()
     }
 
     fun onPause() {
-        // 暂停渲染
+        glSurfaceView?.onPause()
     }
 
     fun release() {
-        try {
-            asset?.release()
-            assetLoader?.release()
-            materialProvider?.release()
-            engine?.destroy()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error releasing engine", e)
-        }
+        // no-op
     }
 }
 
 enum class AvatarAnimation {
-    IDLE,
-    TALKING,
-    HAPPY,
-    SAD,
-    ANGRY,
-    TIRED,
-    ANXIOUS,
-    LOVING,
-    SURPRISED,
-    BLINK
+    IDLE, TALKING, HAPPY, SAD, ANGRY, TIRED, ANXIOUS, LOVING, SURPRISED, BLINK
 }
