@@ -113,12 +113,13 @@ class MemoryEngine(private val context: Context) {
         val keywords = query.split("\\s+".toRegex()).filter { it.length > 1 }
 
         val allMemories = longTermMemory + shortTermMemory.takeLast(20)
-        val scored = allMemories.map { memory ->
-            val score = keywords.sumOf { keyword ->
-                if (memory.content.contains(keyword, ignoreCase = true)) 1 else 0
+        val scoredPairs: List<Pair<MemoryItem, Int>> = allMemories.map { memory ->
+            val score = keywords.count { keyword ->
+                memory.content.contains(keyword, ignoreCase = true)
             }
-            memory to score
-        }.filter { it.second > 0 }
+            Pair(memory, score)
+        }
+        val scored = scoredPairs.filter { it.second > 0 }
             .sortedByDescending { it.second }
             .take(limit)
             .map { it.first }
@@ -141,7 +142,7 @@ class MemoryEngine(private val context: Context) {
     fun getUserProfileSummary(): String {
         val sb = StringBuilder()
         sb.appendLine("=== 用户画像 ===")
-        sb.appendLine("关系亲密度: $intensityLevel/100")
+        sb.appendLine("关系亲密度: $intimacyLevel/100")
         sb.appendLine("认识天数: ${daysKnown}天")
 
         if (userProfile.name != null) sb.appendLine("名字: ${userProfile.name}")
