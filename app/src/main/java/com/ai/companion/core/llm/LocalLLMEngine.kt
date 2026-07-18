@@ -12,10 +12,6 @@ import java.nio.ByteOrder
 import java.nio.channels.FileChannel
 import kotlin.math.min
 
-/**
- * 本地LLM引擎 - 使用llama.cpp通过JNI推理
- * 支持Qwen2.5-0.5B等GGUF格式模型 & LoRA微调
- */
 class LocalLLMEngine(private val context: Context) {
 
     companion object {
@@ -23,8 +19,6 @@ class LocalLLMEngine(private val context: Context) {
         private const val DEFAULT_MODEL = "qwen2.5-0.5b-q4_k_m.gguf"
         private const val FEEDBACK_THRESHOLD = 20
         private const val MAX_HISTORY = 512
-
-        // LoRA训练参数
         private const val LORA_RANK = 8
         private const val LORA_ALPHA = 16
         private const val LORA_EPOCHS = 3
@@ -32,13 +26,9 @@ class LocalLLMEngine(private val context: Context) {
         private const val LEARNING_RATE = 1e-4f
     }
 
-    // 对话历史
     private val chatHistory = mutableListOf<ChatMessage>()
-
-    // 用户反馈缓存（达到阈值触发微调）
     private val feedbackCache = mutableListOf<FeedbackPair>()
 
-    // 系统提示词 - 伴侣人格
     private val systemPrompt = buildString {
         appendLine("你是我的人工智能伴侣，名字叫'星璃'。与我对话时请注意以下设定：")
         appendLine("1. 你是我的亲密伴侣和朋友，语气温柔体贴但不过度暧昧")
@@ -51,29 +41,21 @@ class LocalLLMEngine(private val context: Context) {
         appendLine("8. 用中文回复，偶尔可以带一些可爱的语气词")
     }
 
-    // 情绪状态
     private var currentEmotion = EmotionState.NEUTRAL
-
-    // AI状态机
     private var aiState = AIState.IDLE
 
-    // 推理状态
     private val _isThinking = MutableStateFlow(false)
     val isThinking: StateFlow<Boolean> = _isThinking.asStateFlow()
 
-    // 生成文本流
     private val _responseStream = MutableSharedFlow<String>()
     val responseStream: SharedFlow<String> = _responseStream.asSharedFlow()
 
-    // 模型加载状态
     private val _modelLoaded = MutableStateFlow(false)
     val modelLoaded: StateFlow<Boolean> = _modelLoaded.asStateFlow()
 
-    // LoRA已加载
     private var loraAdapterLoaded = false
     private var loraAdapterPath: String? = null
 
-    // JNI native methods
     private external fun nativeInit(modelPath: String, nCtx: Int): Long
     private external fun nativeEvaluate(handle: Long, tokens: IntArray): IntArray
     private external fun nativeGenerate(handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float, repeatPenalty: Float): String
@@ -98,7 +80,6 @@ class LocalLLMEngine(private val context: Context) {
                 if (!File(modelPath).exists()) {
                     Log.w(TAG, "Model not found at $modelPath, will use system default")
                 }
-                // 加载llama.cpp原生库
                 System.loadLibrary("llama")
 
                 nativeHandle = nativeInit(modelPath, 2048)
@@ -106,7 +87,6 @@ class LocalLLMEngine(private val context: Context) {
                     _modelLoaded.value = true
                     Log.d(TAG, "Model loaded successfully")
 
-                    // 加载已有的LoRA适配器
                     val loraFile = getLoRAPath()
                     if (File(loraFile).exists()) {
                         nativeLoadLoRA(nativeHandle, loraFile, 1.0f)
@@ -130,13 +110,9 @@ class LocalLLMEngine(private val context: Context) {
         return withContext(Dispatchers.IO) {
             _isThinking.value = true
             try {
-                // 构建带上下文的prompt
                 val prompt = buildPrompt(userInput)
-
-                // 记录用户输入
                 chatHistory.add(ChatMessage(Role.USER, userInput))
 
-                // 生成回复
                 val response = nativeGenerate(
                     nativeHandle, prompt,
                     maxTokens = 256,
@@ -147,17 +123,13 @@ class LocalLLMEngine(private val context: Context) {
 
                 chatHistory.add(ChatMessage(Role.ASSISTANT, response))
 
-                // 截断过长的历史
                 if (chatHistory.size > MAX_HISTORY) {
                     val excess = chatHistory.size - MAX_HISTORY
-                    // 保留system prompt后的内容，删掉最早的部分
                     val toRemove = min(excess, chatHistory.size - 2)
                     repeat(toRemove) { chatHistory.removeFirstOrNull() }
                 }
 
-                // 更新情绪
                 updateEmotion(userInput)
-
                 response
             } catch (e: Exception) {
                 Log.e(TAG, "Generation error", e)
@@ -178,13 +150,7 @@ class LocalLLMEngine(private val context: Context) {
                 val prompt = buildPrompt(userInput)
                 chatHistory.add(ChatMessage(Role.USER, userInput))
 
-                nativeGenerateStream(
-                    nativeHandle, prompt,
-                    maxTokens = 256,
-                    temperature = 0.7f,
-                    topP = 0.9f,
-                    repeatPenalty = 1.1f
-                )
+                nativeGenerateStream(nativeHandle, prompt, maxTokens = 256, temperature = 0.7f, topP = 0.9f, repeatPenalty = 1.1f)
 
                 val fullResponse = StringBuilder()
                 while (isStreaming) {
@@ -206,29 +172,20 @@ class LocalLLMEngine(private val context: Context) {
     }
 
     fun stopGeneration() {
-        if (nativeHandle != 0L) {
-            nativeStopGenerate(nativeHandle)
-        }
+        if (nativeHandle != 0L) { nativeStopGenerate(nativeHandle) }
         isStreaming = false
         job?.cancel()
     }
 
-    /**
-     * 添加用户反馈用于后续微调
-     */
     fun addFeedback(userInput: String, modelResponse: String, userRating: Int, correctedResponse: String?) {
         feedbackCache.add(FeedbackPair(userInput, modelResponse, userRating, correctedResponse))
         Log.d(TAG, "Feedback added, cache size: ${feedbackCache.size}")
-
-        // 当反馈达到阈值时触发自动微调标记
         if (feedbackCache.size >= FEEDBACK_THRESHOLD) {
             triggerAutoFineTune()
         }
     }
 
     private fun triggerAutoFineTune() {
-        // 在FineTuneService中处理实际的微调逻辑
-        // 这里通过广播触发
         Log.d(TAG, "Feedback threshold reached ($FEEDBACK_THRESHOLD), ready for fine-tune")
     }
 
@@ -244,27 +201,17 @@ class LocalLLMEngine(private val context: Context) {
 
     suspend fun runFineTune(progressCallback: (Float) -> Unit): Boolean {
         if (nativeHandle == 0L) return false
-
         return withContext(Dispatchers.IO) {
             try {
                 val trainData = prepareTrainingData()
-                val success = nativeStartTraining(
-                    nativeHandle, trainData,
-                    LORA_RANK, LORA_ALPHA,
-                    LORA_EPOCHS, LORA_BATCH_SIZE,
-                    LEARNING_RATE
-                )
-
+                val success = nativeStartTraining(nativeHandle, trainData, LORA_RANK, LORA_ALPHA, LORA_EPOCHS, LORA_BATCH_SIZE, LEARNING_RATE)
                 if (success) {
-                    // 轮询训练进度
                     var progress = 0f
                     while (progress < 1.0f) {
                         delay(1000)
                         progress = nativeGetTrainingProgress(nativeHandle)
                         progressCallback(progress)
                     }
-
-                    // 保存LoRA
                     val loraPath = getLoRAPath()
                     val saved = nativeSaveLoRA(nativeHandle, loraPath)
                     if (saved) {
@@ -273,9 +220,7 @@ class LocalLLMEngine(private val context: Context) {
                         loraAdapterPath = loraPath
                     }
                     saved
-                } else {
-                    false
-                }
+                } else false
             } catch (e: Exception) {
                 Log.e(TAG, "Fine-tune failed", e)
                 false
@@ -288,13 +233,8 @@ class LocalLLMEngine(private val context: Context) {
             try {
                 val modelFile = File(getModelsDir(), DEFAULT_MODEL)
                 if (modelFile.exists()) return@withContext
-
                 Log.d(TAG, "Downloading model from $modelUrl")
-                URL(modelUrl).openStream().use { input ->
-                    FileOutputStream(modelFile).use { output ->
-                        input.copyTo(output)
-                    }
-                }
+                URL(modelUrl).openStream().use { input -> FileOutputStream(modelFile).use { input.copyTo(it) } }
                 Log.d(TAG, "Model downloaded")
             } catch (e: Exception) {
                 Log.e(TAG, "Download failed", e)
@@ -303,17 +243,11 @@ class LocalLLMEngine(private val context: Context) {
     }
 
     fun getChatHistory(): List<ChatMessage> = chatHistory.toList()
-
     fun getCurrentEmotion(): EmotionState = currentEmotion
 
     fun release() {
-        if (nativeHandle != 0L) {
-            nativeRelease(nativeHandle)
-            nativeHandle = 0
-        }
+        if (nativeHandle != 0L) { nativeRelease(nativeHandle); nativeHandle = 0 }
     }
-
-    // === 内部方法 ===
 
     private fun getModelsDir(): File {
         val dir = File(context.filesDir, "models")
@@ -321,13 +255,8 @@ class LocalLLMEngine(private val context: Context) {
         return dir
     }
 
-    private fun getModelPath(): String {
-        return File(getModelsDir(), DEFAULT_MODEL).absolutePath
-    }
-
-    private fun getLoRAPath(): String {
-        return File(context.filesDir, "lora_adapter.bin").absolutePath
-    }
+    private fun getModelPath(): String = File(getModelsDir(), DEFAULT_MODEL).absolutePath
+    private fun getLoRAPath(): String = File(context.filesDir, "lora_adapter.bin").absolutePath
 
     private fun buildPrompt(userInput: String): String {
         val sb = StringBuilder()
@@ -336,12 +265,12 @@ class LocalLLMEngine(private val context: Context) {
         sb.appendLine("当前情绪状态：${currentEmotion.description}")
         sb.appendLine()
 
-        // 添加上下文（最近10轮）
         val recentHistory = chatHistory.takeLast(20)
         for (msg in recentHistory) {
             when (msg.role) {
                 Role.USER -> sb.appendLine("<|user|>\n${msg.content}\n")
                 Role.ASSISTANT -> sb.appendLine("<|assistant|>\n${msg.content}\n")
+                Role.SYSTEM -> sb.appendLine("<|system|>\n${msg.content}\n")
             }
         }
 
@@ -375,16 +304,8 @@ class LocalLLMEngine(private val context: Context) {
     }
 }
 
-// === 数据类 ===
-
-data class ChatMessage(
-    val role: Role,
-    val content: String,
-    val timestamp: Long = System.currentTimeMillis()
-)
-
+data class ChatMessage(val role: Role, val content: String, val timestamp: Long = System.currentTimeMillis())
 enum class Role { USER, ASSISTANT, SYSTEM }
-
 enum class EmotionState(val description: String) {
     HAPPY("心情很好，语气轻松愉快"),
     SAD("情绪有些低落，需要安慰"),
@@ -394,14 +315,5 @@ enum class EmotionState(val description: String) {
     LOVING("充满爱意，语气温暖"),
     NEUTRAL("平静状态")
 }
-
-enum class AIState {
-    IDLE, THINKING, SPEAKING, TRAINING
-}
-
-data class FeedbackPair(
-    val userInput: String,
-    val modelResponse: String,
-    val userRating: Int,  // 1-5
-    val correctedResponse: String?  // 用户纠正的回复
-)
+enum class AIState { IDLE, THINKING, SPEAKING, TRAINING }
+data class FeedbackPair(val userInput: String, val modelResponse: String, val userRating: Int, val correctedResponse: String?)
