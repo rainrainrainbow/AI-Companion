@@ -9,6 +9,9 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.ai.companion.core.AiCompanionApp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /**
  * 微调服务 - 执行LoRA模型微调
@@ -26,7 +29,8 @@ class FineTuneService : Service() {
         val app = application as AiCompanionApp
         val llm = app.llmEngine
 
-        Thread {
+        // 使用协程而非Thread来调用suspend函数
+        CoroutineScope(Dispatchers.IO).launch {
             try {
                 llm.runFineTune { progress ->
                     Log.d(TAG, "Fine-tune progress: ${(progress * 100).toInt()}%")
@@ -37,7 +41,7 @@ class FineTuneService : Service() {
             } finally {
                 stopSelf()
             }
-        }.start()
+        }
 
         return START_NOT_STICKY
     }
