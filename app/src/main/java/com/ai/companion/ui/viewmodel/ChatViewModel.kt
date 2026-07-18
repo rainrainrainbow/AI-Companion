@@ -16,6 +16,8 @@ import com.ai.companion.core.memory.MemoryEngine
 import com.ai.companion.service.CompanionService
 import com.ai.companion.service.FineTuneAlarmReceiver
 import com.ai.companion.service.FineTuneService
+import com.ai.companion.service.ACTION_START
+import com.ai.companion.service.ACTION_STOP
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
