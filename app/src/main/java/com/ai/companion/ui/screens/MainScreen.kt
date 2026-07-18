@@ -1,6 +1,7 @@
 package com.ai.companion.ui.screens
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -231,7 +232,8 @@ fun MainScreen(
             if (uiState.showSettings) {
                 SettingsPanel(
                     viewModel = viewModel,
-                    onDismiss = { viewModel.toggleSettings() }
+                    onDismiss = { viewModel.toggleSettings() },
+                    context = context
                 )
             }
         }
@@ -350,7 +352,8 @@ fun AvatarView(
 @Composable
 fun SettingsPanel(
     viewModel: ChatViewModel,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    context: Context
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
@@ -449,7 +452,7 @@ fun SettingsPanel(
             Spacer(Modifier.height(16.dp))
 
             Button(
-                onClick = { viewModel.startFineTune(context = LocalContext.current) },
+                onClick = { viewModel.startFineTune(context = context) },
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(Icons.Default.Tune, null)
