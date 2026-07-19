@@ -13,10 +13,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -278,8 +280,15 @@ fun AvatarView(modifier: Modifier = Modifier, emotion: String, isSpeaking: Boole
 @Composable
 fun SettingsPanel(viewModel: ChatViewModel, onDismiss: () -> Unit, context: Context) {
     val uiState by viewModel.uiState.collectAsState()
+    val scrollState = rememberScrollState()
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background.copy(alpha = 0.95f)) {
-        Column(modifier = Modifier.fillMaxSize().padding(24.dp).navigationBarsPadding()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp)
+                .navigationBarsPadding()
+                .verticalScroll(scrollState)
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -382,6 +391,7 @@ fun SettingsPanel(viewModel: ChatViewModel, onDismiss: () -> Unit, context: Cont
                 Spacer(Modifier.width(8.dp))
                 Text("立即微调模型 (${uiState.feedbackCount}条反馈)")
             }
+            Spacer(Modifier.height(32.dp))
         }
     }
 }
