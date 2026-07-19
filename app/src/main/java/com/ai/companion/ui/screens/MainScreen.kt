@@ -111,10 +111,11 @@ fun MainScreen(
             )
         },
         bottomBar = {
-            // 底部输入栏
+            // 底部输入栏 - 添加导航栏内边距防止被系统导航键遮挡
             Surface(
                 tonalElevation = 3.dp,
-                color = MaterialTheme.colorScheme.surface
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier.navigationBarsPadding()
             ) {
                 Column {
                     // 模型加载状态
@@ -186,7 +187,8 @@ fun MainScreen(
                     }
                 }
             }
-        }
+        },
+        contentWindowInsets = WindowInsets.systemBars
     ) { padding ->
         Box(
             modifier = Modifier
@@ -365,6 +367,7 @@ fun SettingsPanel(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(24.dp)
+                .navigationBarsPadding()
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
