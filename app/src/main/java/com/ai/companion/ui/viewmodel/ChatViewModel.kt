@@ -38,6 +38,7 @@ data class UiState(
     val ttsEnabled: Boolean = true,
     val autoFineTune: Boolean = true,
     val showSettings: Boolean = false,
+    val showModelManager: Boolean = false,
     val serviceRunning: Boolean = false,
     val darkTheme: Boolean = false
 )
@@ -169,6 +170,10 @@ class ChatViewModel : ViewModel() {
 
     fun toggleSettings() {
         _uiState.update { it.copy(showSettings = !it.showSettings) }
+    }
+
+    fun toggleModelManager() {
+        _uiState.update { it.copy(showModelManager = !it.showModelManager, showSettings = false) }
     }
 
     fun toggleAvatar() {
