@@ -41,11 +41,6 @@ jobs:
           gradle wrapper --gradle-version 8.10
           chmod +x gradlew
 
-      - name: Setup Android SDK & NDK
-        run: |
-          echo "y" | ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager --install "ndk;27.0.12077973" 2>/dev/null || true
-          echo "NDK ready"
-
       - name: Clone llama.cpp
         run: |
           git clone --depth 1 --branch b4667 https://github.com/ggerganov/llama.cpp.git llama.cpp
@@ -56,7 +51,12 @@ jobs:
           mkdir -p app/src/main/jniLibs/arm64-v8a
           mkdir -p app/src/main/jniLibs/armeabi-v7a
 
-      - name: Build APK with NDK
+      - name: Build native libraries
+        run: |
+          chmod +x scripts/build_native.sh
+          bash scripts/build_native.sh
+
+      - name: Build APK
         run: |
           if [ "$BUILD_TYPE" = "release" ]; then
             ./gradlew assembleRelease -x lint -x test --no-daemon
