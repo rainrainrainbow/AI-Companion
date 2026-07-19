@@ -39,6 +39,33 @@ JNI_SRC="$REPO_DIR/app/src/main/cpp/llama_jni.cpp"
 cp "$JNI_SRC" "$LLAMA_DIR/llama_jni.cpp"
 echo "Copied JNI wrapper to llama.cpp tree"
 
+# ============================================================
+# CRITICAL FIX: Add llama_jni.cpp to the llama target in CMake
+# ============================================================
+LLAMA_CMAKE="$LLAMA_DIR/CMakeLists.txt"
+if grep -q "llama_jni.cpp" "$LLAMA_CMAKE" 2>/dev/null; then
+    echo "llama_jni.cpp already in CMakeLists.txt, skipping patch"
+else
+    echo "Patching llama.cpp CMakeLists.txt to include llama_jni.cpp..."
+    python3 -c "
+import re
+with open('$LLAMA_CMAKE', 'r') as f:
+    content = f.read()
+
+content = re.sub(
+    r'(add_library\\(llama[^)]*?\\n\\s+src/llama\\.cpp)',
+    r'\\1\\n    llama_jni.cpp',
+    content,
+    flags=re.DOTALL
+)
+
+with open('$LLAMA_CMAKE', 'w') as f:
+    f.write(content)
+print('CMakeLists.txt patched successfully')
+"
+    grep -n "llama_jni" "$LLAMA_CMAKE" || echo "WARNING: llama_jni not found after patch!"
+fi
+
 build_abi() {
     local ABI=$1
     local OUTPUT_DIR="$REPO_DIR/app/src/main/jniLibs/$ABI"
@@ -77,11 +104,17 @@ build_abi() {
     fi
     
     cp "$LIB_FILE" "$OUTPUT_DIR/libllama.so"
-    local SIZE=$(stat -c%s "$OUTPUT_DIR/libllama.so" 2>/dev/null)
+    local SIZE=$(stat -c%s "$OUTPUT_DIR/libllama.so" 2>/dev/null || echo 0)
     echo "  Output: $OUTPUT_DIR/libllama.so ($((SIZE/1024))KB)"
+    
+    # Verify JNI symbols
+    local JNI_COUNT=$(nm -D "$OUTPUT_DIR/libllama.so" 2>/dev/null | grep -c "Java_com_ai" || echo 0)
+    echo "  JNI functions found: $JNI_COUNT"
+    if [ "$JNI_COUNT" -eq 0 ]; then
+        echo "  WARNING: No JNI functions! llama_jni.cpp may not be compiled in!"
+    fi
 }
 
-# Build for arm64-v8a
 build_abi "arm64-v8a"
 
 echo ""
