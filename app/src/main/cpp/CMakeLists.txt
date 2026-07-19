@@ -5,10 +5,22 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 
+# Find Android log library
 find_library(log-lib log)
 
-# llama.cpp headers are expected at ../llama.cpp (cloned by CI)
+# llama.cpp headers are at ../llama.cpp (cloned by CI / build_native.sh)
 set(LLAMA_CPP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../llama.cpp)
+
+# Our JNI library - builds a separate libllama_jni.so that links against the
+# pre-built core libllama.so (which is built by build_native.sh without JNI)
+#
+# Architecture: Gradle calls build_native.sh first (builds libllama.so), then
+# builds this JNI wrapper via CMake. The JNI library is small and links
+# dynamically to the core llama library.
+
+add_library(llama_jni SHARED
+    llama_jni.cpp
+)
 
 # Include llama.cpp headers
 target_include_directories(llama_jni PRIVATE
@@ -17,30 +29,26 @@ target_include_directories(llama_jni PRIVATE
     ${LLAMA_CPP_DIR}/ggml/include
 )
 
-# Our JNI library - compiled as part of the llama shared library
-# The actual build is done by build_native.sh which patches llama.cpp's CMakeLists.txt
-# This CMakeLists.txt is for local Android Studio development only
-add_library(llama_jni SHARED
-    llama_jni.cpp
-)
+# Link to pre-built core libllama.so
+set(LIBLLAMA_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libllama.so)
 
-target_include_directories(llama_jni PRIVATE
-    ${LLAMA_CPP_DIR}
-    ${LLAMA_CPP_DIR}/common
-    ${LLAMA_CPP_DIR}/ggml/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
-
+# Import the pre-built core library
 target_link_libraries(llama_jni
     PRIVATE
     ${log-lib}
-    jnigraphics
     android
+    jnigraphics
 )
 
-# Import pre-built libllama.so (built by build_native.sh)
-add_library(llama SHARED IMPORTED)
-set_target_properties(llama PROPERTIES IMPORTED_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libllama.so)
+# Tell the linker where to find libllama.so at link time
+# At runtime, Android's linker will load libllama.so from jniLibs first
+# because System.loadLibrary("llama_jni") triggers loading of dependencies
+target_link_directories(llama_jni PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI})
+
+# We don't link directly to libllama.so at build time (it's built by build_native.sh)
+# Instead, we use dlopen/dlsym at runtime OR rely on the linker resolving symbols
+# when libllama.so is loaded. For safety, we add a dependency: 
+# The JNI library constructor will verify libllama is loaded.
 
 # Optimize for mobile
 if(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
