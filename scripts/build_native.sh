@@ -1,48 +1,51 @@
 #!/bin/bash
 # Build llama.cpp + JNI wrapper for Android using NDK standalone toolchain
-# This script is used by CI to produce libllama.so for arm64-v8a and armeabi-v7a
-
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Configuration
 LLAMA_VERSION="b4667"
-NDK_VERSION="27.0.12077973"
 API_LEVEL=26
 
 # Detect NDK
 if [ -z "$ANDROID_NDK_HOME" ]; then
-    if [ -d "$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" ]; then
-        ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
-    elif [ -d "$ANDROID_HOME/ndk/$NDK_VERSION" ]; then
-        ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
-    else
-        echo "Error: NDK not found. Set ANDROID_NDK_HOME"
-        exit 1
+    if [ -d "$ANDROID_SDK_ROOT/ndk/"* ]; then
+        ANDROID_NDK_HOME=$(ls -d $ANDROID_SDK_ROOT/ndk/* 2>/dev/null | sort -V | tail -1)
+    elif [ -d "$ANDROID_HOME/ndk/"* ]; then
+        ANDROID_HOME=$(ls -d $ANDROID_HOME/ndk/* 2>/dev/null | sort -V | tail -1)
     fi
 fi
 
 echo "Using NDK: $ANDROID_NDK_HOME"
 
-# Toolchain path
 TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
 
 # Clone llama.cpp if not present
-if [ ! -d "$REPO_DIR/llama.cpp" ]; then
+LLAMA_DIR="$REPO_DIR/llama.cpp"
+if [ ! -d "$LLAMA_DIR" ]; then
     echo "Cloning llama.cpp v$LLAMA_VERSION..."
-    git clone --depth 1 --branch $LLAMA_VERSION https://github.com/ggerganov/llama.cpp.git "$REPO_DIR/llama.cpp"
+    git clone --depth 1 --branch $LLAMA_VERSION https://github.com/ggerganov/llama.cpp.git "$LLAMA_DIR"
 fi
 
-# Build for each target ABI
+# Verify llama.h exists
+if [ ! -f "$LLAMA_DIR/llama.h" ]; then
+    echo "ERROR: llama.h not found in $LLAMA_DIR"
+    ls -la "$LLAMA_DIR/"
+    exit 1
+fi
+
+echo "llama.h found at $LLAMA_DIR/llama.h"
+
+# Key include paths for llama.cpp
+INCLUDE_DIRS="-I$LLAMA_DIR -I$LLAMA_DIR/common -I$LLAMA_DIR/ggml/include"
+
 build_abi() {
     local ABI=$1
     local TARGET=$2
     local OUTPUT_DIR="$REPO_DIR/app/src/main/jniLibs/$ABI"
     
     echo "Building for $ABI ($TARGET)..."
-    
     mkdir -p "$OUTPUT_DIR"
     
     local CC="$TOOLCHAIN/bin/${TARGET}${API_LEVEL}-clang"
@@ -50,10 +53,14 @@ build_abi() {
     local AR="$TOOLCHAIN/bin/llvm-ar"
     local STRIP="$TOOLCHAIN/bin/llvm-strip"
     
-    # Compile flags
-    local FLAGS="-O3 -std=c++17 -fPIC -DNDEBUG"
-    local FLAGS="$FLAGS -I$REPO_DIR/llama.cpp -I$REPO_DIR/llama.cpp/common -I$REPO_DIR/llama.cpp/ggml/include -I$REPO_DIR/llama.cpp/ggml/src"
-    local FLAGS="$FLAGS -I$REPO_DIR/app/src/main/cpp"
+    # Verify compiler exists
+    if [ ! -f "$CXX" ]; then
+        echo "ERROR: Compiler not found: $CXX"
+        ls "$TOOLCHAIN/bin/" | grep "$TARGET" | head -5
+        exit 1
+    fi
+    
+    local FLAGS="-O3 -std=c++17 -fPIC -DNDEBUG $INCLUDE_DIRS"
     
     if [ "$ABI" = "arm64-v8a" ]; then
         FLAGS="$FLAGS -march=armv8.2-a+fp16+rcpc+dotprod"
@@ -62,34 +69,69 @@ build_abi() {
     fi
     
     local BUILD_DIR=$(mktemp -d)
+    local OBJ_FILES=""
     
-    # Compile llama.cpp sources
+    # Compile llama.cpp core sources
     echo "  Compiling llama.cpp sources..."
-    for src in "$REPO_DIR/llama.cpp/"*.cpp "$REPO_DIR/llama.cpp/ggml/src/"*.c "$REPO_DIR/llama.cpp/ggml/src/"*.cpp; do
+    
+    # ggml base C files
+    for src in "$LLAMA_DIR/ggml/src/"*.c; do
         basename=$(basename "$src")
-        # Skip test/example files
+        obj="$BUILD_DIR/${basename}.o"
+        echo "    $basename"
+        $CC $FLAGS -c "$src" -o "$obj" 2>/dev/null || true
+        OBJ_FILES="$OBJ_FILES $obj"
+    done
+    
+    # ggml base C++ files
+    for src in "$LLAMA_DIR/ggml/src/"*.cpp; do
+        basename=$(basename "$src")
+        obj="$BUILD_DIR/${basename}.o"
+        echo "    $basename"
+        $CXX $FLAGS -c "$src" -o "$obj" 2>/dev/null || true
+        OBJ_FILES="$OBJ_FILES $obj"
+    done
+    
+    # llama.cpp C++ files (skip examples, tests, etc)
+    for src in "$LLAMA_DIR/"*.cpp; do
+        basename=$(basename "$src")
         case "$basename" in
-            main.cpp|server.cpp|train.cpp|benchmark*|test*|perplexity*|convert*|quantize*|embedding*|batched*|parallel*|simple*|speculative*|baby-llama*|save-load-state*|gptneox-wip*)
+            main.cpp|server.cpp|train.cpp|benchmark*|test*|perplexity*|convert*|quantize*|embedding*|batched*|parallel*|simple*|speculative*|baby-llama*|save-load-state*|gptneox-wip*|gguf-py*)
                 continue ;;
         esac
-        
         obj="$BUILD_DIR/${basename}.o"
-        
-        if [[ "$src" == *.c ]]; then
-            $CC $FLAGS -c "$src" -o "$obj" 2>/dev/null || true
-        else
-            $CXX $FLAGS -c "$src" -o "$obj" 2>/dev/null || true
-        fi
+        echo "    $basename"
+        $CXX $FLAGS -c "$src" -o "$obj" 2>/dev/null || true
+        OBJ_FILES="$OBJ_FILES $obj"
     done
+    
+    # Compile common/ files if they exist
+    if [ -d "$LLAMA_DIR/common" ]; then
+        for src in "$LLAMA_DIR/common/"*.cpp; do
+            if [ -f "$src" ]; then
+                basename=$(basename "$src")
+                obj="$BUILD_DIR/common_${basename}.o"
+                echo "    common/$basename"
+                $CXX $FLAGS -c "$src" -o "$obj" 2>/dev/null || true
+                OBJ_FILES="$OBJ_FILES $obj"
+            fi
+        done
+    fi
     
     # Compile our JNI wrapper
     echo "  Compiling JNI wrapper..."
-    $CXX $FLAGS -c "$REPO_DIR/app/src/main/cpp/llama_jni.cpp" -o "$BUILD_DIR/llama_jni.o"
+    local JNI_SRC="$REPO_DIR/app/src/main/cpp/llama_jni.cpp"
+    $CXX $FLAGS -c "$JNI_SRC" -o "$BUILD_DIR/llama_jni.o"
+    OBJ_FILES="$OBJ_FILES $BUILD_DIR/llama_jni.o"
+    
+    # Check if we have any object files
+    local OBJ_COUNT=$(ls "$BUILD_DIR/"*.o 2>/dev/null | wc -l)
+    echo "  Object files: $OBJ_COUNT"
     
     # Link into shared library
     echo "  Linking libllama.so..."
     $CXX -shared -o "$BUILD_DIR/libllama.so" \
-        "$BUILD_DIR/"*.o \
+        $OBJ_FILES \
         -landroid -llog -lm -lz \
         -Wl,--gc-sections -Wl,-z,nocopyreloc
     
@@ -103,9 +145,13 @@ build_abi() {
 }
 
 # Build for arm64-v8a
+echo ""
+echo "=== Building arm64-v8a ==="
 build_abi "arm64-v8a" "aarch64-linux-android"
 
 # Build for armeabi-v7a
+echo ""
+echo "=== Building armeabi-v7a ==="
 build_abi "armeabi-v7a" "armv7a-linux-androideabi"
 
 echo ""
