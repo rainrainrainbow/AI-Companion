@@ -7,16 +7,12 @@ import kotlinx.coroutines.flow.*
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URL
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.nio.channels.FileChannel
 import kotlin.math.min
 
 class LocalLLMEngine(private val context: Context) {
 
     companion object {
         private const val TAG = "LocalLLMEngine"
-        private const val DEFAULT_MODEL = "qwen2.5-0.5b-q4_k_m.gguf"
         private const val FEEDBACK_THRESHOLD = 20
         private const val MAX_HISTORY = 512
         private const val LORA_RANK = 8
@@ -228,20 +224,6 @@ class LocalLLMEngine(private val context: Context) {
         }
     }
 
-    suspend fun downloadModel(modelUrl: String) {
-        withContext(Dispatchers.IO) {
-            try {
-                val modelFile = File(getModelsDir(), DEFAULT_MODEL)
-                if (modelFile.exists()) return@withContext
-                Log.d(TAG, "Downloading model from $modelUrl")
-                URL(modelUrl).openStream().use { input -> FileOutputStream(modelFile).use { input.copyTo(it) } }
-                Log.d(TAG, "Model downloaded")
-            } catch (e: Throwable) {
-                Log.e(TAG, "Download failed", e)
-            }
-        }
-    }
-
     fun getChatHistory(): List<ChatMessage> = chatHistory.toList()
     fun getCurrentEmotion(): EmotionState = currentEmotion
 
@@ -255,7 +237,25 @@ class LocalLLMEngine(private val context: Context) {
         return dir
     }
 
-    private fun getModelPath(): String = File(getModelsDir(), DEFAULT_MODEL).absolutePath
+    private fun getModelPath(): String {
+        // 使用ModelManager获取用户选择的模型
+        val modelManager = ModelManager(context)
+        val currentModel = modelManager.getCurrentModelName()
+        if (currentModel.isNotEmpty()) {
+            val modelFile = File(getModelsDir(), currentModel)
+            if (modelFile.exists()) {
+                return modelFile.absolutePath
+            }
+        }
+        // Fallback: 使用第一个可用的模型
+        val models = modelManager.getLocalModels()
+        if (models.isNotEmpty()) {
+            return models.first().path
+        }
+        // 无模型时返回默认路径
+        return File(getModelsDir(), "model.gguf").absolutePath
+    }
+
     private fun getLoRAPath(): String = File(context.filesDir, "lora_adapter.bin").absolutePath
 
     private fun buildPrompt(userInput: String): String {
