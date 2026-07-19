@@ -31,8 +31,13 @@ if [ ! -d "$LLAMA_DIR" ]; then
 fi
 
 # Verify
-[ ! -f "$LLAMA_DIR/include/llama.h" ] && echo "ERROR: llama.h not found!" && exit 1
+[ ! -f "$LLAMA_DIR/include/llama.h" ] && echo "ERROR: llama.h not found at $LLAMA_DIR/include/llama.h" && exit 1
 echo "llama.cpp structure OK"
+
+# Copy JNI wrapper into llama.cpp source tree
+JNI_SRC="$REPO_DIR/app/src/main/cpp/llama_jni.cpp"
+cp "$JNI_SRC" "$LLAMA_DIR/llama_jni.cpp"
+echo "Copied JNI wrapper to llama.cpp tree"
 
 build_abi() {
     local ABI=$1
@@ -46,16 +51,12 @@ build_abi() {
     rm -rf "$BUILD_DIR"
     mkdir -p "$BUILD_DIR"
 
-    # Step 1: Build llama.cpp as a static library
-    local LLAMA_BUILD="$BUILD_DIR/llama_build"
-    mkdir -p "$LLAMA_BUILD"
-    
-    echo "  Configuring llama.cpp (static)..."
-    cmake -S "$LLAMA_DIR" -B "$LLAMA_BUILD" \
+    echo "  Configuring llama.cpp with JNI wrapper..."
+    cmake -S "$LLAMA_DIR" -B "$BUILD_DIR" \
         -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
         -DANDROID_ABI="$ABI" \
         -DANDROID_PLATFORM=$API_LEVEL \
-        -DBUILD_SHARED_LIBS=OFF \
+        -DBUILD_SHARED_LIBS=ON \
         -DLLAMA_BUILD_TESTS=OFF \
         -DLLAMA_BUILD_EXAMPLES=OFF \
         -DLLAMA_BUILD_SERVER=OFF \
@@ -65,46 +66,22 @@ build_abi() {
         -DLLAMA_BLAS=OFF \
         -DLLAMA_CURL=OFF 2>&1 | tail -5
     
-    echo "  Building llama.cpp (static)..."
-    cmake --build "$LLAMA_BUILD" -- -j$(nproc) 2>&1 | tail -5
+    echo "  Building..."
+    cmake --build "$BUILD_DIR" --target llama -- -j$(nproc) 2>&1 | tail -20
     
-    local LLAMA_STATIC=$(find "$LLAMA_BUILD" -name "libllama.a" -type f 2>/dev/null | head -1)
-    if [ -z "$LLAMA_STATIC" ]; then
-        echo "ERROR: libllama.a not found!"
-        find "$LLAMA_BUILD" -name "*.a" -type f 2>/dev/null
+    local LIB_FILE=$(find "$BUILD_DIR" -name "libllama.so" -type f 2>/dev/null | head -1)
+    if [ -z "$LIB_FILE" ]; then
+        echo "ERROR: libllama.so not found!"
+        find "$BUILD_DIR" -name "*.so" -type f 2>/dev/null
         exit 1
     fi
-    echo "  Static library: $LLAMA_STATIC"
     
-    # Step 2: Build JNI wrapper - directly compile and link
-    # We use the NDK toolchain directly to avoid CMake include path issues
-    local CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${API_LEVEL}-clang"
-    local CXX="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${API_LEVEL}-clang++"
-    
-    echo "  Compiling JNI wrapper with direct NDK compiler..."
-    $CXX -O3 -std=c++17 -fPIC \
-        -I"$LLAMA_DIR/include" \
-        -I"$LLAMA_DIR/ggml/include" \
-        -c "$REPO_DIR/app/src/main/cpp/llama_jni.cpp" \
-        -o "$BUILD_DIR/llama_jni.o" 2>&1
-    
-    echo "  Linking libllama.so..."
-    $CXX -shared -o "$BUILD_DIR/libllama.so" \
-        "$BUILD_DIR/llama_jni.o" "$LLAMA_STATIC" \
-        -landroid -llog -lz \
-        -Wl,--gc-sections -Wl,-z,nocopyreloc \
-        -static-libstdc++ 2>&1
-    
-    # Strip
-    local STRIP="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
-    $STRIP --strip-all "$BUILD_DIR/libllama.so" -o "$OUTPUT_DIR/libllama.so" 2>/dev/null || \
-        cp "$BUILD_DIR/libllama.so" "$OUTPUT_DIR/libllama.so"
-    
+    cp "$LIB_FILE" "$OUTPUT_DIR/libllama.so"
     local SIZE=$(stat -c%s "$OUTPUT_DIR/libllama.so" 2>/dev/null)
     echo "  Output: $OUTPUT_DIR/libllama.so ($((SIZE/1024))KB)"
 }
 
-# Build for arm64-v8a (primary target)
+# Build for arm64-v8a
 build_abi "arm64-v8a"
 
 echo ""
