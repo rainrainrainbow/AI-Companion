@@ -1,7 +1,10 @@
 package com.ai.companion.ui.screens
 
 import android.content.Context
+import android.net.Uri
 import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -40,6 +43,24 @@ fun ModelManagerScreen(
     var statusMessage by remember { mutableStateOf<String?>(null) }
 
     val storageInfo = remember { modelManager.getStorageInfo() }
+
+    // SAF 文件选择器：选择.gguf文件
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch {
+                statusMessage = "正在从文件选择器导入..."
+                val success = modelManager.importModelFromUri(uri)
+                if (success) {
+                    localModels = modelManager.getLocalModels()
+                    statusMessage = "✅ 从文件选择器导入成功！"
+                } else {
+                    statusMessage = "❌ 导入失败，文件可能已存在或无法读取"
+                }
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -108,7 +129,7 @@ fun ModelManagerScreen(
 
             Spacer(Modifier.height(16.dp))
 
-            // 操作按钮
+            // 操作按钮：扫描下载目录、文件选择器、下载模型
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -127,7 +148,18 @@ fun ModelManagerScreen(
                 ) {
                     Icon(Icons.Default.Search, null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("扫描下载目录", fontSize = 13.sp)
+                    Text("扫描下载", fontSize = 13.sp)
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        filePickerLauncher.launch(arrayOf("application/octet-stream", "*/*"))
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.FileOpen, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("选择文件", fontSize = 13.sp)
                 }
 
                 Button(
