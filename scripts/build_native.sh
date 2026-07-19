@@ -1,14 +1,15 @@
 #!/bin/bash
-# Build llama.cpp + JNI wrapper for Android using NDK
+# Build llama.cpp + JNI wrapper for Android using CMake + NDK toolchain
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
 LLAMA_VERSION="b4667"
+LLAMA_COMMIT="d2fe216fb2fb7ca8627618c9ea3a2e7886325780"
 API_LEVEL=26
 
-# Detect NDK (latest version)
+# Detect NDK
 if [ -z "$ANDROID_NDK_HOME" ]; then
     for d in "$ANDROID_SDK_ROOT/ndk/"* "$ANDROID_HOME/ndk/"*; do
         [ -d "$d" ] && ANDROID_NDK_HOME="$d"
@@ -16,129 +17,82 @@ if [ -z "$ANDROID_NDK_HOME" ]; then
 fi
 echo "Using NDK: $ANDROID_NDK_HOME"
 
-TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+if [ ! -f "$TOOLCHAIN_FILE" ]; then
+    echo "ERROR: Android toolchain file not found at $TOOLCHAIN_FILE"
+    exit 1
+fi
 
-# Clone llama.cpp
+# Clone llama.cpp with full depth to get the tag correctly
 LLAMA_DIR="$REPO_DIR/llama.cpp"
 if [ ! -d "$LLAMA_DIR" ]; then
-    echo "Cloning llama.cpp v$LLAMA_VERSION..."
-    git clone --depth 1 --branch $LLAMA_VERSION https://github.com/ggerganov/llama.cpp.git "$LLAMA_DIR"
+    echo "Cloning llama.cpp (commit $LLAMA_COMMIT)..."
+    git clone --depth 1 https://github.com/ggerganov/llama.cpp.git "$LLAMA_DIR"
+    cd "$LLAMA_DIR"
+    # Fetch the specific commit
+    git fetch --depth 1 origin $LLAMA_COMMIT
+    git checkout $LLAMA_COMMIT
+    cd "$REPO_DIR"
 fi
 
 # Verify structure
-[ ! -f "$LLAMA_DIR/include/llama.h" ] && echo "ERROR: llama.h not found" && exit 1
+echo "Checking llama.cpp structure..."
+ls -la "$LLAMA_DIR/include/" 2>/dev/null || echo "include dir not found"
+[ ! -f "$LLAMA_DIR/include/llama.h" ] && echo "ERROR: llama.h not found at $LLAMA_DIR/include/llama.h" && exit 1
 echo "llama.cpp structure OK"
-
-# Include paths (new structured layout)
-INCLUDE_DIRS="-I$LLAMA_DIR/include -I$LLAMA_DIR/src -I$LLAMA_DIR/common -I$LLAMA_DIR/ggml/include -I$LLAMA_DIR/ggml/src"
 
 build_abi() {
     local ABI=$1
-    local TARGET=$2
     local OUTPUT_DIR="$REPO_DIR/app/src/main/jniLibs/$ABI"
     
-    echo "Building for $ABI ($TARGET)..."
+    echo ""
+    echo "=== Building $ABI ==="
     mkdir -p "$OUTPUT_DIR"
     
-    local CC="$TOOLCHAIN/bin/${TARGET}${API_LEVEL}-clang"
-    local CXX="$TOOLCHAIN/bin/${TARGET}${API_LEVEL}-clang++"
-    local STRIP="$TOOLCHAIN/bin/llvm-strip"
+    local BUILD_DIR="$REPO_DIR/build_llama/$ABI"
+    mkdir -p "$BUILD_DIR"
     
-    [ ! -f "$CXX" ] && echo "ERROR: Compiler not found: $CXX" && exit 1
+    # Configure with CMake
+    cmake -S "$LLAMA_DIR" -B "$BUILD_DIR" \
+        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
+        -DANDROID_ABI="$ABI" \
+        -DANDROID_PLATFORM=$API_LEVEL \
+        -DCMAKE_C_FLAGS="-O3" \
+        -DCMAKE_CXX_FLAGS="-O3 -fPIC" \
+        -DBUILD_SHARED_LIBS=ON \
+        -DLLAMA_BUILD_TESTS=OFF \
+        -DLLAMA_BUILD_EXAMPLES=OFF \
+        -DLLAMA_BUILD_SERVER=OFF \
+        -DLLAMA_STATIC=OFF \
+        -DLLAMA_METAL=OFF \
+        -DLLAMA_CUDA=OFF \
+        -DLLAMA_VULKAN=OFF \
+        -DLLAMA_BLAS=OFF \
+        -DLLAMA_CURL=OFF \
+        -DBUILD_SHARED_LIBS=ON 2>&1 | tail -5
     
-    local FLAGS="-O3 -std=c++17 -fPIC -DNDEBUG $INCLUDE_DIRS"
+    # Build only the llama library (not the JNI wrapper yet)
+    cmake --build "$BUILD_DIR" --target llama -- -j$(nproc) 2>&1 | tail -20
     
-    if [ "$ABI" = "arm64-v8a" ]; then
-        FLAGS="$FLAGS -march=armv8.2-a+fp16+rcpc+dotprod"
-    elif [ "$ABI" = "armeabi-v7a" ]; then
-        FLAGS="$FLAGS -march=armv7-a+fp -mfpu=neon -mfloat-abi=softfp"
+    # Find the built library
+    local LIB_FILE=$(find "$BUILD_DIR" -name "libllama.so" -type f 2>/dev/null | head -1)
+    if [ -z "$LIB_FILE" ]; then
+        echo "ERROR: libllama.so not found in build dir"
+        find "$BUILD_DIR" -name "*.so" -type f 2>/dev/null
+        exit 1
     fi
     
-    local BUILD_DIR=$(mktemp -d)
-    local OBJ_FILES=""
-    
-    # Compile ggml C sources
-    echo "  Compiling ggml C sources..."
-    for src in "$LLAMA_DIR/ggml/src/"*.c; do
-        basename=$(basename "$src")
-        obj="$BUILD_DIR/${basename}.o"
-        echo "    $basename"
-        $CC $FLAGS -c "$src" -o "$obj" 2>/dev/null || true
-        OBJ_FILES="$OBJ_FILES $obj"
-    done
-    
-    # Compile ggml C++ sources
-    echo "  Compiling ggml C++ sources..."
-    for src in "$LLAMA_DIR/ggml/src/"*.cpp; do
-        [ ! -f "$src" ] && continue
-        basename=$(basename "$src")
-        obj="$BUILD_DIR/${basename}.o"
-        echo "    $basename"
-        $CXX $FLAGS -c "$src" -o "$obj" 2>/dev/null || true
-        OBJ_FILES="$OBJ_FILES $obj"
-    done
-    
-    # Compile llama.cpp src sources
-    echo "  Compiling llama.cpp src sources..."
-    for src in "$LLAMA_DIR/src/"*.cpp; do
-        [ ! -f "$src" ] && continue
-        basename=$(basename "$src")
-        obj="$BUILD_DIR/${basename}.o"
-        echo "    $basename"
-        $CXX $FLAGS -c "$src" -o "$obj" 2>/dev/null || true
-        OBJ_FILES="$OBJ_FILES $obj"
-    done
-    
-    # Compile common sources
-    if [ -d "$LLAMA_DIR/common" ]; then
-        echo "  Compiling common sources..."
-        for src in "$LLAMA_DIR/common/"*.cpp; do
-            [ ! -f "$src" ] && continue
-            basename=$(basename "$src")
-            obj="$BUILD_DIR/common_${basename}.o"
-            echo "    $basename"
-            $CXX $FLAGS -c "$src" -o "$obj" 2>/dev/null || true
-            OBJ_FILES="$OBJ_FILES $obj"
-        done
-    fi
-    
-    # Compile JNI wrapper
-    echo "  Compiling JNI wrapper..."
-    local JNI_SRC="$REPO_DIR/app/src/main/cpp/llama_jni.cpp"
-    $CXX $FLAGS -c "$JNI_SRC" -o "$BUILD_DIR/llama_jni.o"
-    OBJ_FILES="$OBJ_FILES $BUILD_DIR/llama_jni.o"
-    
-    # Check object count
-    local OBJ_COUNT=$(ls "$BUILD_DIR/"*.o 2>/dev/null | wc -l)
-    echo "  Object files: $OBJ_COUNT"
-    
-    # Link into shared library
-    echo "  Linking libllama.so..."
-    $CXX -shared -o "$BUILD_DIR/libllama.so" \
-        $OBJ_FILES \
-        -landroid -llog -lm -lz \
-        -Wl,--gc-sections -Wl,-z,nocopyreloc \
-        -static-libstdc++
-    
-    # Strip and copy
-    $STRIP --strip-all "$BUILD_DIR/libllama.so" -o "$OUTPUT_DIR/libllama.so" 2>/dev/null || \
-        cp "$BUILD_DIR/libllama.so" "$OUTPUT_DIR/libllama.so"
-    
+    # Copy to jniLibs
+    cp "$LIB_FILE" "$OUTPUT_DIR/libllama.so"
     local SIZE=$(stat -c%s "$OUTPUT_DIR/libllama.so" 2>/dev/null)
-    echo "  Output: $OUTPUT_DIR/libllama.so ($((SIZE/1024/1024))MB)"
-    
-    rm -rf "$BUILD_DIR"
+    echo "  Output: $OUTPUT_DIR/libllama.so ($((SIZE/1024))KB)"
 }
 
 # Build for arm64-v8a (primary target)
-echo ""
-echo "=== Building arm64-v8a ==="
-build_abi "arm64-v8a" "aarch64-linux-android"
+build_abi "arm64-v8a"
 
 # Build for armeabi-v7a
-echo ""
-echo "=== Building armeabi-v7a ==="
-build_abi "armeabi-v7a" "armv7a-linux-androideabi"
+build_abi "armeabi-v7a"
 
 echo ""
 echo "✅ Native libraries built successfully!"
