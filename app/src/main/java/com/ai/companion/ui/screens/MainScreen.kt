@@ -64,6 +64,12 @@ fun MainScreen(
         viewModel.startCompanionService(context)
     }
 
+    // 模型管理界面
+    if (uiState.showModelManager) {
+        ModelManagerScreen(onBack = { viewModel.toggleModelManager() })
+        return
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -344,6 +350,29 @@ fun SettingsPanel(viewModel: ChatViewModel, onDismiss: () -> Unit, context: Cont
                             )
                         }
                         Switch(checked = uiState.autoFineTune, onCheckedChange = { viewModel.toggleAutoFineTune() })
+                    }
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                    // 模型管理入口
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Storage, null, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Column {
+                                Text("模型管理")
+                                Text(
+                                    "导入/下载/切换GGUF模型",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        FilledTonalButton(onClick = { viewModel.toggleModelManager() }) {
+                            Text("管理", fontSize = 13.sp)
+                        }
                     }
                 }
             }
