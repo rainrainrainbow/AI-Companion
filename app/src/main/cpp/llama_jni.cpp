@@ -9,17 +9,16 @@
 
 #include "llama.h"
 
-// Per-instance context storage
 struct LlamaInstance {
     struct llama_model *model = nullptr;
     struct llama_context *ctx = nullptr;
     struct llama_sampler *smpl = nullptr;
     const struct llama_vocab *vocab = nullptr;
+    struct llama_adapter_lora *lora = nullptr;
     int n_ctx = 2048;
     bool streaming = false;
     std::string pending_response;
     size_t stream_pos = 0;
-
     bool training = false;
     float training_progress = 0.0f;
 };
@@ -43,7 +42,6 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeInit(
     auto *inst = new LlamaInstance();
     inst->n_ctx = n_ctx;
 
-    // Model params
     llama_model_params model_params = llama_model_default_params();
     model_params.use_mmap = true;
 
@@ -54,10 +52,8 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeInit(
         return 0;
     }
 
-    // Vocab
     inst->vocab = llama_model_get_vocab(inst->model);
 
-    // Context params
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx = n_ctx;
     ctx_params.n_batch = 512;
@@ -70,10 +66,9 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeInit(
         return 0;
     }
 
-    // Set threads
     llama_set_n_threads(inst->ctx, 4, 4);
 
-    // Create sampler chain: temp -> top-p -> greedy
+    // Sampling chain
     auto sparams = llama_sampler_chain_default_params();
     inst->smpl = llama_sampler_chain_init(sparams);
     llama_sampler_chain_add(inst->smpl, llama_sampler_init_temp(0.7f));
@@ -95,30 +90,25 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeGenerate(
 
     std::string prompt_str = jstring2string(env, prompt);
 
-    // Tokenize
     int n_tokens = llama_tokenize(inst->vocab, prompt_str.c_str(), prompt_str.length(), nullptr, 0, true, false);
     std::vector<llama_token> tokens(n_tokens);
     llama_tokenize(inst->vocab, prompt_str.c_str(), prompt_str.length(), tokens.data(), n_tokens, true, false);
 
-    // Decode prompt
     llama_batch batch = llama_batch_get_one(tokens.data(), n_tokens);
     if (llama_decode(inst->ctx, batch)) {
         LOGE("Failed to decode prompt");
         return env->NewStringUTF("");
     }
 
-    // Generate
     std::string response;
     std::vector<char> piece(64);
     for (int i = 0; i < max_tokens; i++) {
         llama_token id = llama_sampler_sample(inst->smpl, inst->ctx, -1);
-
         if (llama_vocab_is_eog(inst->vocab, id)) break;
 
         int n = llama_token_to_piece(inst->vocab, id, piece.data(), piece.size(), 0, false);
         if (n > 0) response.append(piece.data(), n);
 
-        // Accept token and decode
         llama_sampler_accept(inst->smpl, id);
         llama_token single = id;
         batch = llama_batch_get_one(&single, 1);
@@ -205,8 +195,20 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeLoadLoRA(
     std::string path = jstring2string(env, lora_path);
     LOGI("Loading LoRA adapter from %s", path.c_str());
 
-    bool success = llama_model_load_lora(inst->model, path.c_str(), scale);
-    return success ? JNI_TRUE : JNI_FALSE;
+    // Free old LoRA if exists
+    if (inst->lora) {
+        llama_adapter_lora_free(inst->lora);
+        inst->lora = nullptr;
+    }
+
+    inst->lora = llama_adapter_lora_init(inst->model, path.c_str());
+    if (!inst->lora) {
+        LOGE("Failed to load LoRA adapter");
+        return JNI_FALSE;
+    }
+
+    int32_t ret = llama_set_adapter_lora(inst->ctx, inst->lora, scale);
+    return (ret == 0) ? JNI_TRUE : JNI_FALSE;
 }
 
 // ========== nativeStartTraining (simplified) ==========
@@ -264,14 +266,9 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeRelease(
 
     LOGI("Releasing model instance");
 
-    if (inst->smpl) {
-        llama_sampler_free(inst->smpl);
-    }
-    if (inst->ctx) {
-        llama_free(inst->ctx);
-    }
-    if (inst->model) {
-        llama_model_free(inst->model);
-    }
+    if (inst->smpl) llama_sampler_free(inst->smpl);
+    if (inst->lora) llama_adapter_lora_free(inst->lora);
+    if (inst->ctx) llama_free(inst->ctx);
+    if (inst->model) llama_model_free(inst->model);
     delete inst;
 }
