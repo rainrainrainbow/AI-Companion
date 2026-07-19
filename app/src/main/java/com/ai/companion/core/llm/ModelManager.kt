@@ -17,6 +17,9 @@ class ModelManager(private val context: Context) {
         private const val TAG = "ModelManager"
         private const val MODELS_DIR = "models"
 
+        private var nativeLibChecked = false
+        private var nativeLibAvailable = false
+
         val RECOMMENDED_MODELS = listOf(
             ModelSource(
                 name = "Qwen2.5-0.5B-Q4_K_M",
@@ -59,7 +62,6 @@ class ModelManager(private val context: Context) {
 
     fun scanDownloadDir(): List<ModelInfo> {
         val models = mutableListOf<ModelInfo>()
-        // 直接扫描 /sdcard/Download 目录
         val downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
         if (!downloadDir.exists()) return models
 
@@ -96,6 +98,50 @@ class ModelManager(private val context: Context) {
             Log.e(TAG, "Failed to import model", e)
             false
         }
+    }
+
+    /**
+     * 通过 Android SAF 文件选择器的 Content URI 导入模型
+     */
+    suspend fun importModelFromUri(uri: Uri): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val fileName = getFileNameFromUri(uri) ?: "model_${System.currentTimeMillis()}.gguf"
+            val destFile = File(modelsDir, fileName)
+            if (destFile.exists()) {
+                Log.w(TAG, "Model already exists: $fileName")
+                return@withContext true
+            }
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(destFile).use { output ->
+                    input.copyTo(output)
+                }
+            } ?: run {
+                Log.e(TAG, "Could not open input stream for URI: $uri")
+                return@withContext false
+            }
+            Log.d(TAG, "Imported model from URI: $fileName (${destFile.length() / 1024 / 1024}MB)")
+            true
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to import model from URI", e)
+            false
+        }
+    }
+
+    private fun getFileNameFromUri(uri: Uri): String? {
+        var name: String? = null
+        val cursor = context.contentResolver.query(uri, null, null, null, null)
+        cursor?.use {
+            if (it.moveToFirst()) {
+                val nameIndex = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (nameIndex >= 0) {
+                    name = it.getString(nameIndex)
+                }
+            }
+        }
+        if (name == null) {
+            name = uri.lastPathSegment
+        }
+        return name
     }
 
     suspend fun downloadModel(url: String, fileName: String, onProgress: (Float) -> Unit): Boolean = withContext(Dispatchers.IO) {
@@ -158,13 +204,20 @@ class ModelManager(private val context: Context) {
         Log.d(TAG, "Current model set to: $fileName")
     }
 
+    /**
+     * 检查原生库是否可用，结果缓存避免重复加载
+     */
     fun isNativeLibAvailable(): Boolean {
-        return try {
-            System.loadLibrary("llama")
-            true
-        } catch (e: UnsatisfiedLinkError) {
-            false
+        if (!nativeLibChecked) {
+            nativeLibAvailable = try {
+                System.loadLibrary("llama")
+                true
+            } catch (e: UnsatisfiedLinkError) {
+                false
+            }
+            nativeLibChecked = true
         }
+        return nativeLibAvailable
     }
 
     fun getStorageInfo(): StorageInfo {
