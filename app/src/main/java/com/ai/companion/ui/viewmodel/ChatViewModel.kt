@@ -38,13 +38,16 @@ data class UiState(
     val ttsEnabled: Boolean = true,
     val autoFineTune: Boolean = true,
     val showSettings: Boolean = false,
-    val serviceRunning: Boolean = false
+    val serviceRunning: Boolean = false,
+    val darkTheme: Boolean = false
 )
 
 class ChatViewModel : ViewModel() {
 
     companion object {
         private const val TAG = "ChatViewModel"
+        private const val PREFS_NAME = "ai_companion_prefs"
+        private const val KEY_DARK_THEME = "dark_theme"
     }
 
     private val _uiState = MutableStateFlow(UiState())
@@ -59,6 +62,11 @@ class ChatViewModel : ViewModel() {
         memoryEngine = MemoryEngine(app)
         emotionEngine = EmotionEngine()
 
+        // 恢复暗黑主题偏好
+        val prefs = app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val savedDarkTheme = prefs.getBoolean(KEY_DARK_THEME, false)
+        _uiState.update { it.copy(darkTheme = savedDarkTheme) }
+
         // 监听AI状态
         viewModelScope.launch {
             app.llmEngine.isThinking.collect { thinking ->
@@ -72,14 +80,11 @@ class ChatViewModel : ViewModel() {
             }
         }
 
-        // 监听流式输出
         viewModelScope.launch {
             app.llmEngine.responseStream.collect { token ->
-                // 处理流式输出更新UI
             }
         }
 
-        // 更新亲密度
         viewModelScope.launch {
             while (true) {
                 delay(5000)
@@ -124,7 +129,6 @@ class ChatViewModel : ViewModel() {
                 it.copy(messages = it.messages + ChatMessage(Role.ASSISTANT, response))
             }
 
-            // TTS朗读
             if (_uiState.value.ttsEnabled) {
                 _uiState.update { it.copy(isSpeaking = true) }
                 app.ttsEngine.speakWithEmotion(response, _uiState.value.emotion)
@@ -132,7 +136,6 @@ class ChatViewModel : ViewModel() {
                 _uiState.update { it.copy(isSpeaking = false) }
             }
 
-            // 更新Avatar表情
             updateAvatarEmotion()
         }
     }
@@ -176,6 +179,13 @@ class ChatViewModel : ViewModel() {
         _uiState.update { it.copy(ttsEnabled = !it.ttsEnabled) }
     }
 
+    fun toggleDarkTheme() {
+        val newValue = !_uiState.value.darkTheme
+        _uiState.update { it.copy(darkTheme = newValue) }
+        val prefs = app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(KEY_DARK_THEME, newValue).apply()
+    }
+
     fun toggleAutoFineTune() {
         val newValue = !_uiState.value.autoFineTune
         _uiState.update { it.copy(autoFineTune = newValue) }
@@ -214,7 +224,6 @@ class ChatViewModel : ViewModel() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        // 设置每天晚上2点执行
         val calendar = java.util.Calendar.getInstance().apply {
             set(java.util.Calendar.HOUR_OF_DAY, 2)
             set(java.util.Calendar.MINUTE, 0)
@@ -234,8 +243,6 @@ class ChatViewModel : ViewModel() {
     }
 
     private fun updateAvatarEmotion() {
-        val emotion = _uiState.value.emotion
-        // 通知Avatar3DEngine更新表情
     }
 
     override fun onCleared() {
