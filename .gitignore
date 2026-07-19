@@ -14,6 +14,10 @@ app/src/main/jniLibs/
 app/src/main/cpp/libs/
 app/src/main/cpp/build/
 
+# CI build artifacts
+build_llama/
+llama.cpp/
+
 # Model files (too large for git)
 *.gguf
 *.bin
@@ -31,3 +35,6 @@ keystore.jks
 # Logs
 *.log
 crashlytics-*
+
+# OS
+Thumbs.db
