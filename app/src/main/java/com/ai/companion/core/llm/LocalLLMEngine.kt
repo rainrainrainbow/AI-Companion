@@ -76,7 +76,11 @@ class LocalLLMEngine(private val context: Context) {
                 if (!File(modelPath).exists()) {
                     Log.w(TAG, "Model not found at $modelPath, will use system default")
                 }
+                // Load libraries in correct order: core first, then JNI wrapper
+                Log.d(TAG, "Loading libllama.so (core)...")
                 System.loadLibrary("llama")
+                Log.d(TAG, "Loading libllama_jni.so (JNI wrapper)...")
+                System.loadLibrary("llama_jni")
 
                 nativeHandle = nativeInit(modelPath, 2048)
                 if (nativeHandle != 0L) {
