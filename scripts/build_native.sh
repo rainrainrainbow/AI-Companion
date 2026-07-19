@@ -31,7 +31,7 @@ if [ ! -d "$LLAMA_DIR" ]; then
 fi
 
 # Verify
-[ ! -f "$LLAMA_DIR/include/llama.h" ] && echo "ERROR: llama.h not found" && exit 1
+[ ! -f "$LLAMA_DIR/include/llama.h" ] && echo "ERROR: llama.h not found at $LLAMA_DIR/include/llama.h" && exit 1
 echo "llama.cpp structure OK"
 
 build_abi() {
@@ -75,7 +75,7 @@ build_abi() {
         find "$LLAMA_BUILD" -name "*.a" -type f 2>/dev/null
         exit 1
     fi
-    echo "  Static library: $LLAMA_STATIC ($(stat -c%s "$LLAMA_STATIC" 2>/dev/null | awk '{printf "%.1fMB", $1/1024/1024}'))"
+    echo "  Static library: $LLAMA_STATIC"
     
     # Step 2: Build JNI wrapper shared library linked against static llama
     local JNI_BUILD="$BUILD_DIR/jni_build"
@@ -105,7 +105,7 @@ set(LLAMA_INCLUDE_DIRS
     "${LLAMA_DIR}/ggml/include"
 )
 
-# Our JNI shared library
+# Our JNI shared library - named 'llama' so System.loadLibrary("llama") works
 add_library(llama_jni SHARED
     "${REPO_DIR}/app/src/main/cpp/llama_jni.cpp"
 )
@@ -121,6 +121,7 @@ target_link_libraries(llama_jni
     ${log-lib}
     ${z-lib}
     android
+    jnigraphics
 )
 
 # Optimize for ARM
@@ -133,6 +134,9 @@ endif()
 set_target_properties(llama_jni PROPERTIES
     LINK_FLAGS "-Wl,--gc-sections -Wl,-z,nocopyreloc"
 )
+
+# Set output name to 'llama' so it produces libllama.so
+set_target_properties(llama_jni PROPERTIES OUTPUT_NAME "llama")
 CMAKEEOF
     
     echo "  Configuring JNI wrapper..."
@@ -144,26 +148,23 @@ CMAKEEOF
     echo "  Building JNI wrapper..."
     cmake --build "$JNI_BUILD/build" -- -j$(nproc) 2>&1 | tail -20
     
-    # Find the built library
-    local JNI_LIB=$(find "$JNI_BUILD/build" -name "libllama_jni.so" -type f 2>/dev/null | head -1)
+    # Find the built library (should be libllama.so due to OUTPUT_NAME property)
+    local JNI_LIB=$(find "$JNI_BUILD/build" -name "libllama.so" -type f 2>/dev/null | head -1)
     if [ -z "$JNI_LIB" ]; then
-        echo "ERROR: libllama_jni.so not found!"
+        echo "ERROR: libllama.so not found!"
         find "$JNI_BUILD/build" -name "*.so" -type f 2>/dev/null
         exit 1
     fi
     
     # Copy to jniLibs
-    cp "$JNI_LIB" "$OUTPUT_DIR/libllama_jni.so"
-    local SIZE=$(stat -c%s "$OUTPUT_DIR/libllama_jni.so" 2>/dev/null)
-    echo "  Output: $OUTPUT_DIR/libllama_jni.so ($((SIZE/1024))KB)"
+    cp "$JNI_LIB" "$OUTPUT_DIR/libllama.so"
+    local SIZE=$(stat -c%s "$OUTPUT_DIR/libllama.so" 2>/dev/null)
+    echo "  Output: $OUTPUT_DIR/libllama.so ($((SIZE/1024))KB)"
 }
 
 # Build for arm64-v8a (primary target)
 build_abi "arm64-v8a"
 
-# Build for armeabi-v7a (optional, can be skipped if build time is too long)
-# build_abi "armeabi-v7a"
-
 echo ""
 echo "✅ Native libraries built successfully!"
-echo "  - app/src/main/jniLibs/arm64-v8a/libllama_jni.so"
+echo "  - app/src/main/jniLibs/arm64-v8a/libllama.so"
