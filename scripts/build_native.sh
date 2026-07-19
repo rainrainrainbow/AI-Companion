@@ -34,90 +34,66 @@ fi
 [ ! -f "$LLAMA_DIR/include/llama.h" ] && echo "ERROR: llama.h not found at $LLAMA_DIR/include/llama.h" && exit 1
 echo "llama.cpp structure OK"
 
-# Copy JNI wrapper into llama.cpp source tree
+# Copy JNI wrapper into llama.cpp source tree - put it in src/ so it's with the other sources
 JNI_SRC="$REPO_DIR/app/src/main/cpp/llama_jni.cpp"
-cp "$JNI_SRC" "$LLAMA_DIR/llama_jni.cpp"
-echo "Copied JNI wrapper to llama.cpp tree"
+cp "$JNI_SRC" "$LLAMA_DIR/src/llama_jni.cpp"
+echo "Copied JNI wrapper to $LLAMA_DIR/src/llama_jni.cpp"
 
 # ============================================================
 # CRITICAL FIX: Add llama_jni.cpp to the llama target in src/CMakeLists.txt
-# The add_library(llama ...) is defined in src/CMakeLists.txt, not root CMakeLists.txt
+# The add_library(llama ...) is defined in src/CMakeLists.txt
 # ============================================================
 SRC_CMAKE="$LLAMA_DIR/src/CMakeLists.txt"
 echo "Patching $SRC_CMAKE..."
 
-# Check if already patched
 if grep -q "llama_jni.cpp" "$SRC_CMAKE" 2>/dev/null; then
     echo "  llama_jni.cpp already in src/CMakeLists.txt"
 else
-    # The file uses llama_add_compile_flags() at the top, then
-    # add_library(llama ...) with sources listed
-    # Insert llama_jni.cpp after the first .cpp source file in the add_library block
     echo "  Adding llama_jni.cpp to src/CMakeLists.txt..."
     
-    # Use python for reliable multiline pattern matching
-    python3 << 'PYEOF'
-import re
-
-src_cmake = "$LLAMA_DIR/src/CMakeLists.txt"
-with open(src_cmake, 'r') as f:
+    # Use sed to insert after the first source file line in the add_library(llama block
+    # The file typically has: add_library(llama\n  llama.cpp\n  llama-adapter.cpp\n  ...)
+    # Insert after 'llama.cpp' line
+    sed -i '/^    llama\.cpp$/a\    llama_jni.cpp' "$SRC_CMAKE"
+    
+    # Verify
+    if grep -q "llama_jni.cpp" "$SRC_CMAKE" 2>/dev/null; then
+        echo "  SUCCESS: llama_jni.cpp added to src/CMakeLists.txt"
+        grep -n "llama_jni" "$SRC_CMAKE"
+    else
+        echo "  sed failed, trying python fallback..."
+        python3 -c "
+path = '$SRC_CMAKE'
+with open(path, 'r') as f:
     content = f.read()
 
-# The add_library(llama ...) block lists source files
-# Pattern: add_library(llama ...)\n  llama.cpp\n  ...
-# We need to insert after the add_library(llama line and before first source
-# Or better: find "add_library(llama" and add after the opening paren
-
-# Simpler approach: just append llama_jni.cpp to the source list
-# Find the end of the add_library block (the closing parenthesis)
-# and insert before it
-
-# First, find the add_library(llama block
+# Find the add_library(llama block and insert llama_jni.cpp
 idx = content.find('add_library(llama')
 if idx >= 0:
-    # Find the closing parenthesis of this add_library call
-    # The block spans multiple lines
-    start = idx
+    # Find the closing parenthesis
     depth = 0
-    for i in range(start, len(content)):
+    for i in range(idx, len(content)):
         if content[i] == '(':
             depth += 1
         elif content[i] == ')':
             depth -= 1
             if depth == 0:
-                # Insert before the closing )
-                content = content[:i] + '\n    llama_jni.cpp' + content[i:]
-                print(f"Inserted llama_jni.cpp at position {i}")
+                content = content[:i] + '\\n    llama_jni.cpp' + content[i:]
                 break
-else:
-    # Try lowercase
-    idx = content.find('add_library(llama')
-    if idx >= 0:
-        start = idx
-        depth = 0
-        for i in range(start, len(content)):
-            if content[i] == '(':
-                depth += 1
-            elif content[i] == ')':
-                depth -= 1
-                if depth == 0:
-                    content = content[:i] + '\n    llama_jni.cpp' + content[i:]
-                    print(f"Inserted llama_jni.cpp at position {i}")
-                    break
-
-with open(src_cmake, 'w') as f:
-    f.write(content)
-
-# Verify
-if 'llama_jni.cpp' in content:
-    print("SUCCESS: llama_jni.cpp added to src/CMakeLists.txt")
-else:
-    print("ERROR: Failed to add llama_jni.cpp")
-    exit(1)
-PYEOF
     
-    # Show verification
-    grep -n "llama_jni" "$SRC_CMAKE" || echo "  WARNING: llama_jni not found in $SRC_CMAKE"
+    with open(path, 'w') as f:
+        f.write(content)
+    
+    if 'llama_jni.cpp' in content:
+        print('SUCCESS: llama_jni.cpp added via python fallback')
+    else:
+        print('ERROR: Failed to add llama_jni.cpp')
+        exit(1)
+else:
+    print('ERROR: add_library(llama not found in src/CMakeLists.txt')
+    exit(1)
+"
+    fi
 fi
 
 build_abi() {
