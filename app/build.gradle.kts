@@ -19,13 +19,6 @@ android {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
 
-        // NDK/CMake for llama.cpp JNI
-        externalNativeBuild {
-            cmake {
-                cppFlags += "-std=c++17"
-                arguments("-DANDROID_STL=c++_shared", "-DCMAKE_BUILD_TYPE=Release")
-            }
-        }
     }
 
     buildTypes {
@@ -52,14 +45,6 @@ android {
 
     buildFeatures {
         compose = true
-    }
-
-    // NDK/CMake config
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
     }
 
     packaging {
