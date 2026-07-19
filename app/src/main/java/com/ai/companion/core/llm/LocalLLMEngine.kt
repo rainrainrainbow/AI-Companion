@@ -95,7 +95,7 @@ class LocalLLMEngine(private val context: Context) {
                         Log.d(TAG, "LoRA adapter loaded")
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Failed to load model", e)
                 _modelLoaded.value = false
             }
@@ -131,7 +131,7 @@ class LocalLLMEngine(private val context: Context) {
 
                 updateEmotion(userInput)
                 response
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Generation error", e)
                 "唔…我好像有点卡壳了，能再说一次吗？"
             } finally {
@@ -162,7 +162,7 @@ class LocalLLMEngine(private val context: Context) {
 
                 chatHistory.add(ChatMessage(Role.ASSISTANT, fullResponse.toString()))
                 updateEmotion(userInput)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Stream generation error", e)
             } finally {
                 _isThinking.value = false
@@ -221,7 +221,7 @@ class LocalLLMEngine(private val context: Context) {
                     }
                     saved
                 } else false
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Fine-tune failed", e)
                 false
             }
@@ -236,7 +236,7 @@ class LocalLLMEngine(private val context: Context) {
                 Log.d(TAG, "Downloading model from $modelUrl")
                 URL(modelUrl).openStream().use { input -> FileOutputStream(modelFile).use { input.copyTo(it) } }
                 Log.d(TAG, "Model downloaded")
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Download failed", e)
             }
         }
