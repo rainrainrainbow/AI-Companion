@@ -1,11 +1,10 @@
 #include <jni.h>
 #include <string>
 #include <vector>
-#include <android/log.h>
+#include <cstdio>
 
-#define TAG "LlamaJNI"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+#define LOGI(...) fprintf(stderr, "[LlamaJNI] "); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n")
+#define LOGE(...) fprintf(stderr, "[LlamaJNI ERROR] "); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n")
 
 #include "llama.h"
 
@@ -195,7 +194,6 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeLoadLoRA(
     std::string path = jstring2string(env, lora_path);
     LOGI("Loading LoRA adapter from %s", path.c_str());
 
-    // Free old LoRA if exists
     if (inst->lora) {
         llama_adapter_lora_free(inst->lora);
         inst->lora = nullptr;
