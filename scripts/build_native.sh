@@ -41,29 +41,71 @@ echo "Copied JNI wrapper to llama.cpp tree"
 
 # ============================================================
 # CRITICAL FIX: Add llama_jni.cpp to the llama target in CMake
+# Use sed to insert llama_jni.cpp after the first source file in add_library(llama ...)
 # ============================================================
 LLAMA_CMAKE="$LLAMA_DIR/CMakeLists.txt"
 if grep -q "llama_jni.cpp" "$LLAMA_CMAKE" 2>/dev/null; then
-    echo "llama_jni.cpp already in CMakeLists.txt, skipping patch"
+    echo "  llama_jni.cpp already in CMakeLists.txt, skipping patch"
 else
-    echo "Patching llama.cpp CMakeLists.txt to include llama_jni.cpp..."
+    echo "  Patching llama.cpp CMakeLists.txt to include llama_jni.cpp..."
+    # Find the add_library(llama block and add llama_jni.cpp after the first src file
+    # The structure is: add_library(llama\n  src/llama.cpp\n  src/llama-adapter.cpp\n  ...)
+    # Use sed to insert after the line containing 'src/llama.cpp'
+    sed -i '/^\s*src\/llama\.cpp\s*$/a\    llama_jni.cpp' "$LLAMA_CMAKE"
+    echo "  Verification:"
+    grep -n "llama_jni" "$LLAMA_CMAKE" || (echo "  ERROR: Failed to patch! Trying alternative approach..." && \
+        python3 -c "
+with open('$LLAMA_CMAKE', 'r') as f:
+    lines = f.readlines()
+
+result = []
+patched = False
+for i, line in enumerate(lines):
+    result.append(line)
+    if 'src/llama.cpp' in line and not patched:
+        result.append('    llama_jni.cpp\n')
+        patched = True
+        print(f'Patched at line {i+1}: {line.strip()}')
+
+if not patched:
+    # Try a different pattern - find the add_library(llama line
+    for i, line in enumerate(lines):
+        if 'add_library(llama' in line and ')' not in line:
+            # Insert after this line
+            result.insert(i+1, '    llama_jni.cpp\n')
+            patched = True
+            print(f'Patched after add_library at line {i+1}: {line.strip()}')
+            break
+
+with open('$LLAMA_CMAKE', 'w') as f:
+    f.writelines(result)
+
+print(f'Patched: {patched}')
+")
+    grep -n "llama_jni" "$LLAMA_CMAKE" || echo "  WARNING: Still not found, trying final fallback..."
+fi
+
+# Final verification: if llama_jni still not in CMakeLists, append it manually
+if ! grep -q "llama_jni.cpp" "$LLAMA_CMAKE" 2>/dev/null; then
+    echo "  CRITICAL: Adding llama_jni.cpp via direct insertion..."
     python3 -c "
-import re
 with open('$LLAMA_CMAKE', 'r') as f:
     content = f.read()
 
+# Find the add_library(llama block and add our file
+import re
+# Match: add_library(llama ... whitespace src/llama.cpp
 content = re.sub(
-    r'(add_library\\(llama[^)]*?\\n\\s+src/llama\\.cpp)',
+    r'(add_library\(llama[\\s\\S]*?src/llama\\.cpp)',
     r'\\1\\n    llama_jni.cpp',
-    content,
-    flags=re.DOTALL
+    content
 )
 
 with open('$LLAMA_CMAKE', 'w') as f:
     f.write(content)
-print('CMakeLists.txt patched successfully')
+print('Direct insertion done')
 "
-    grep -n "llama_jni" "$LLAMA_CMAKE" || echo "WARNING: llama_jni not found after patch!"
+    grep -n "llama_jni" "$LLAMA_CMAKE" || echo "  FATAL: Still cannot patch!"
 fi
 
 build_abi() {
@@ -94,7 +136,7 @@ build_abi() {
         -DLLAMA_CURL=OFF 2>&1 | tail -5
     
     echo "  Building..."
-    cmake --build "$BUILD_DIR" --target llama -- -j$(nproc) 2>&1 | tail -20
+    cmake --build "$BUILD_DIR" --target llama -- -j$(nproc) 2>&1 | tail -30
     
     local LIB_FILE=$(find "$BUILD_DIR" -name "libllama.so" -type f 2>/dev/null | head -1)
     if [ -z "$LIB_FILE" ]; then
@@ -108,10 +150,12 @@ build_abi() {
     echo "  Output: $OUTPUT_DIR/libllama.so ($((SIZE/1024))KB)"
     
     # Verify JNI symbols
-    local JNI_COUNT=$(nm -D "$OUTPUT_DIR/libllama.so" 2>/dev/null | grep -c "Java_com_ai" || echo 0)
-    echo "  JNI functions found: $JNI_COUNT"
-    if [ "$JNI_COUNT" -eq 0 ]; then
-        echo "  WARNING: No JNI functions! llama_jni.cpp may not be compiled in!"
+    if command -v nm &>/dev/null; then
+        local JNI_COUNT=$(nm -D "$OUTPUT_DIR/libllama.so" 2>/dev/null | grep -c "Java_com_ai" || echo 0)
+        echo "  JNI functions found in .so: $JNI_COUNT"
+        if [ "$JNI_COUNT" -eq 0 ]; then
+            echo "  WARNING: No JNI functions! Build failed to include llama_jni.cpp"
+        fi
     fi
 }
 
