@@ -7,28 +7,23 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
-// llama.cpp headers
 #include "llama.h"
 
 // Per-instance context storage
 struct LlamaInstance {
     struct llama_model *model = nullptr;
     struct llama_context *ctx = nullptr;
-    llama_token *last_n_tokens = nullptr;
+    struct llama_sampler *smpl = nullptr;
+    const struct llama_vocab *vocab = nullptr;
     int n_ctx = 2048;
     bool streaming = false;
     std::string pending_response;
     size_t stream_pos = 0;
 
-    // LoRA
-    bool lora_loaded = false;
-
-    // Training (simplified)
     bool training = false;
     float training_progress = 0.0f;
 };
 
-// ========== Helper: JNI String <-> C++ String ==========
 static std::string jstring2string(JNIEnv *env, jstring str) {
     if (!str) return "";
     const char *chars = env->GetStringUTFChars(str, nullptr);
@@ -51,31 +46,39 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeInit(
     // Model params
     llama_model_params model_params = llama_model_default_params();
     model_params.use_mmap = true;
-    model_params.use_mlock = false;
 
-    inst->model = llama_load_model_from_file(path.c_str(), model_params);
+    inst->model = llama_model_load_from_file(path.c_str(), model_params);
     if (!inst->model) {
         LOGE("Failed to load model: %s", path.c_str());
         delete inst;
         return 0;
     }
 
+    // Vocab
+    inst->vocab = llama_model_get_vocab(inst->model);
+
     // Context params
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx = n_ctx;
     ctx_params.n_batch = 512;
-    ctx_params.n_threads = 4;
-    ctx_params.n_threads_batch = 4;
 
-    inst->ctx = llama_new_context_with_model(inst->model, ctx_params);
+    inst->ctx = llama_init_from_model(inst->model, ctx_params);
     if (!inst->ctx) {
         LOGE("Failed to create context");
-        llama_free_model(inst->model);
+        llama_model_free(inst->model);
         delete inst;
         return 0;
     }
 
-    inst->last_n_tokens = new llama_token[n_ctx]();
+    // Set threads
+    llama_set_n_threads(inst->ctx, 4, 4);
+
+    // Create sampler chain: temp -> top-p -> greedy
+    auto sparams = llama_sampler_chain_default_params();
+    inst->smpl = llama_sampler_chain_init(sparams);
+    llama_sampler_chain_add(inst->smpl, llama_sampler_init_temp(0.7f));
+    llama_sampler_chain_add(inst->smpl, llama_sampler_init_top_p(0.9f, 1));
+    llama_sampler_chain_add(inst->smpl, llama_sampler_init_greedy());
 
     LOGI("Model loaded successfully, handle=%p", (void*)inst);
     return reinterpret_cast<jlong>(inst);
@@ -92,43 +95,34 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeGenerate(
 
     std::string prompt_str = jstring2string(env, prompt);
 
-    // Tokenize prompt
-    int n_tokens = llama_tokenize(inst->model, prompt_str.c_str(), prompt_str.length(), nullptr, 0, true, false);
-    std::vector<llama_token> embd_inp(n_tokens);
-    llama_tokenize(inst->model, prompt_str.c_str(), prompt_str.length(), embd_inp.data(), n_tokens, true, false);
+    // Tokenize
+    int n_tokens = llama_tokenize(inst->vocab, prompt_str.c_str(), prompt_str.length(), nullptr, 0, true, false);
+    std::vector<llama_token> tokens(n_tokens);
+    llama_tokenize(inst->vocab, prompt_str.c_str(), prompt_str.length(), tokens.data(), n_tokens, true, false);
+
+    // Decode prompt
+    llama_batch batch = llama_batch_get_one(tokens.data(), n_tokens);
+    if (llama_decode(inst->ctx, batch)) {
+        LOGE("Failed to decode prompt");
+        return env->NewStringUTF("");
+    }
 
     // Generate
     std::string response;
-    int n_past = 0;
-    int n_remain = max_tokens;
+    std::vector<char> piece(64);
+    for (int i = 0; i < max_tokens; i++) {
+        llama_token id = llama_sampler_sample(inst->smpl, inst->ctx, -1);
 
-    // Ingest prompt
-    for (int i = 0; i < (int)embd_inp.size(); i += inst->n_ctx - 4) {
-        int n_eval = (int)embd_inp.size() - i;
-        if (n_eval > inst->n_ctx - 4) n_eval = inst->n_ctx - 4;
-        if (llama_eval(inst->ctx, &embd_inp[i], n_eval, n_past, 1)) {
-            LOGE("Failed to eval");
-            return env->NewStringUTF("");
-        }
-        n_past += n_eval;
-    }
+        if (llama_vocab_is_eog(inst->vocab, id)) break;
 
-    // Sample tokens
-    while (n_remain > 0) {
-        llama_token id = llama_sample_token_greedy(inst->ctx);
+        int n = llama_token_to_piece(inst->vocab, id, piece.data(), piece.size(), 0, false);
+        if (n > 0) response.append(piece.data(), n);
 
-        if (id == llama_token_eos(inst->model) || id == llama_token_eot(inst->model)) {
-            break;
-        }
-
-        response += llama_token_to_piece(inst->ctx, id);
-        n_remain--;
-
-        // Eval the new token
-        if (llama_eval(inst->ctx, &id, 1, n_past, 1)) {
-            break;
-        }
-        n_past++;
+        // Accept token and decode
+        llama_sampler_accept(inst->smpl, id);
+        llama_token single = id;
+        batch = llama_batch_get_one(&single, 1);
+        if (llama_decode(inst->ctx, batch)) break;
     }
 
     return env->NewStringUTF(response.c_str());
@@ -145,32 +139,29 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeGenerateStream(
 
     std::string prompt_str = jstring2string(env, prompt);
 
-    int n_tokens = llama_tokenize(inst->model, prompt_str.c_str(), prompt_str.length(), nullptr, 0, true, false);
-    std::vector<llama_token> embd_inp(n_tokens);
-    llama_tokenize(inst->model, prompt_str.c_str(), prompt_str.length(), embd_inp.data(), n_tokens, true, false);
+    int n_tokens = llama_tokenize(inst->vocab, prompt_str.c_str(), prompt_str.length(), nullptr, 0, true, false);
+    std::vector<llama_token> tokens(n_tokens);
+    llama_tokenize(inst->vocab, prompt_str.c_str(), prompt_str.length(), tokens.data(), n_tokens, true, false);
+
+    llama_batch batch = llama_batch_get_one(tokens.data(), n_tokens);
+    if (llama_decode(inst->ctx, batch)) return JNI_FALSE;
 
     inst->streaming = true;
     inst->pending_response.clear();
     inst->stream_pos = 0;
 
-    int n_past = 0;
-    for (int i = 0; i < (int)embd_inp.size(); i += inst->n_ctx - 4) {
-        int n_eval = (int)embd_inp.size() - i;
-        if (n_eval > inst->n_ctx - 4) n_eval = inst->n_ctx - 4;
-        if (llama_eval(inst->ctx, &embd_inp[i], n_eval, n_past, 1)) break;
-        n_past += n_eval;
-    }
+    std::vector<char> piece(64);
+    for (int i = 0; i < max_tokens && inst->streaming; i++) {
+        llama_token id = llama_sampler_sample(inst->smpl, inst->ctx, -1);
+        if (llama_vocab_is_eog(inst->vocab, id)) break;
 
-    int n_remain = max_tokens;
-    while (n_remain > 0 && inst->streaming) {
-        llama_token id = llama_sample_token_greedy(inst->ctx);
-        if (id == llama_token_eos(inst->model) || id == llama_token_eot(inst->model)) break;
+        int n = llama_token_to_piece(inst->vocab, id, piece.data(), piece.size(), 0, false);
+        if (n > 0) inst->pending_response.append(piece.data(), n);
 
-        inst->pending_response += llama_token_to_piece(inst->ctx, id);
-        n_remain--;
-
-        if (llama_eval(inst->ctx, &id, 1, n_past, 1)) break;
-        n_past++;
+        llama_sampler_accept(inst->smpl, id);
+        llama_token single = id;
+        batch = llama_batch_get_one(&single, 1);
+        if (llama_decode(inst->ctx, batch)) break;
     }
 
     inst->streaming = false;
@@ -215,7 +206,6 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeLoadLoRA(
     LOGI("Loading LoRA adapter from %s", path.c_str());
 
     bool success = llama_model_load_lora(inst->model, path.c_str(), scale);
-    inst->lora_loaded = success;
     return success ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -228,9 +218,7 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeStartTraining(
     auto *inst = reinterpret_cast<LlamaInstance*>(handle);
     if (!inst) return JNI_FALSE;
 
-    LOGI("Training start requested (rank=%d, alpha=%d, epochs=%d, batch=%d, lr=%f)",
-         lora_rank, lora_alpha, epochs, batch_size, lr);
-
+    LOGI("Training start requested (simplified)");
     inst->training = true;
     inst->training_progress = 0.0f;
     return JNI_TRUE;
@@ -262,9 +250,7 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeSaveLoRA(
     auto *inst = reinterpret_cast<LlamaInstance*>(handle);
     if (!inst) return JNI_FALSE;
 
-    std::string path = jstring2string(env, output_path);
-    LOGI("Saving LoRA adapter to %s", path.c_str());
-
+    LOGI("Saving LoRA adapter (simplified)");
     return JNI_TRUE;
 }
 
@@ -278,12 +264,14 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeRelease(
 
     LOGI("Releasing model instance");
 
+    if (inst->smpl) {
+        llama_sampler_free(inst->smpl);
+    }
     if (inst->ctx) {
         llama_free(inst->ctx);
     }
     if (inst->model) {
-        llama_free_model(inst->model);
+        llama_model_free(inst->model);
     }
-    delete[] inst->last_n_tokens;
     delete inst;
 }
