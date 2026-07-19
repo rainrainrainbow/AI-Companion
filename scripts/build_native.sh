@@ -1,11 +1,5 @@
 #!/bin/bash
 # Build llama.cpp for Android with separate JNI wrapper
-# 
-# Architecture:
-#   1. libllama.so  - Core llama.cpp library (pure, no JNI)
-#   2. libllama_jni.so - JNI wrapper that links against libllama.so
-#
-# Both .so files are placed in app/src/main/jniLibs/<abi>/
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,7 +8,6 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 LLAMA_COMMIT="d2fe216fb2fb7ca8627618c9ea3a2e7886325780"
 API_LEVEL=26
 
-# Detect NDK
 if [ -z "$ANDROID_NDK_HOME" ]; then
     for d in "$ANDROID_SDK_ROOT/ndk/"* "$ANDROID_HOME/ndk/"*; do
         [ -d "$d" ] && ANDROID_NDK_HOME="$d"
@@ -25,7 +18,6 @@ echo "Using NDK: $ANDROID_NDK_HOME"
 TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
 [ ! -f "$TOOLCHAIN_FILE" ] && echo "ERROR: Android toolchain file not found" && exit 1
 
-# Clone llama.cpp
 LLAMA_DIR="$REPO_DIR/llama.cpp"
 if [ ! -d "$LLAMA_DIR" ]; then
     echo "Cloning llama.cpp..."
@@ -39,7 +31,6 @@ fi
 [ ! -f "$LLAMA_DIR/include/llama.h" ] && echo "ERROR: llama.h not found" && exit 1
 echo "llama.cpp structure OK"
 
-# Path to our JNI source
 JNI_SRC="$REPO_DIR/app/src/main/cpp/llama_jni.cpp"
 [ ! -f "$JNI_SRC" ] && echo "ERROR: JNI source not found at $JNI_SRC" && exit 1
 
@@ -87,7 +78,6 @@ build_abi() {
     local CORE_SIZE=$(stat -c%s "$OUTPUT_DIR/libllama.so" 2>/dev/null || echo 0)
     echo "  [Step 1] Core lib: $OUTPUT_DIR/libllama.so ($((CORE_SIZE/1024))KB)"
     
-    # Verify NO JNI symbols in core library
     if command -v nm &>/dev/null; then
         local JNI_CORE=$(nm -D "$OUTPUT_DIR/libllama.so" 2>/dev/null | grep -c "Java_com_ai" || echo 0)
         echo "  [Step 1] JNI in core: $JNI_CORE (expected 0)"
@@ -95,53 +85,54 @@ build_abi() {
     
     # ============================================================
     # Step 2: Build JNI wrapper library (libllama_jni.so)
-    # Uses a standalone CMake build that links against the core lib
     # ============================================================
     echo "  [Step 2] Building JNI wrapper library..."
     
     local JNI_BUILD_DIR="$BUILD_DIR/jni"
     mkdir -p "$JNI_BUILD_DIR"
     
-    # Create a temporary CMakeLists.txt for the JNI wrapper
-    cat > "$JNI_BUILD_DIR/CMakeLists.txt" << CMAKE_EOF
+    # Write CMakeLists.txt for JNI wrapper
+    # Use python to avoid heredoc escaping issues
+    python3 -c "
+cmake_content = '''
 cmake_minimum_required(VERSION 3.12)
 project(llama_jni C CXX)
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-find_library(log-lib log)
+find_library(LOG_LIB log)
 
 add_library(llama_jni SHARED
-    "${JNI_SRC}"
+    \"${JNI_SRC}\"
 )
 
-# Include llama.cpp headers
 target_include_directories(llama_jni PRIVATE
-    "${LLAMA_DIR}/include"
-    "${LLAMA_DIR}/common"
-    "${LLAMA_DIR}/ggml/include"
+    \"${LLAMA_DIR}/include\"
+    \"${LLAMA_DIR}/common\"
+    \"${LLAMA_DIR}/ggml/include\"
 )
 
-# Import the pre-built core library (so we get a DT_NEEDED entry)
+# Import pre-built core library
 add_library(llama_core SHARED IMPORTED)
 set_target_properties(llama_core PROPERTIES
-    IMPORTED_LOCATION "${OUTPUT_DIR}/libllama.so"
-    IMPORTED_SONAME "libllama.so"
+    IMPORTED_LOCATION \"${OUTPUT_DIR}/libllama.so\"
 )
 
 # Link against core and Android libs
 target_link_libraries(llama_jni PRIVATE
     llama_core
-    ${log-lib}
+    \${LOG_LIB}
     android
 )
 
-# Optimize for ARM64
-if(ANDROID_ABI STREQUAL "arm64-v8a")
+if(ANDROID_ABI STREQUAL \"arm64-v8a\")
     target_compile_options(llama_jni PRIVATE -O3 -march=armv8.2-a+fp16+rcpc+dotprod)
 endif()
-CMAKE_EOF
+'''
+
+with open('${JNI_BUILD_DIR}/CMakeLists.txt', 'w') as f:
+    f.write(cmake_content)
+print('CMakeLists.txt written')
+"
     
     cmake -S "$JNI_BUILD_DIR" -B "$JNI_BUILD_DIR/build" \
         -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
@@ -160,19 +151,18 @@ CMAKE_EOF
     local JNI_SIZE=$(stat -c%s "$OUTPUT_DIR/libllama_jni.so" 2>/dev/null || echo 0)
     echo "  [Step 2] JNI lib: $OUTPUT_DIR/libllama_jni.so ($((JNI_SIZE/1024))KB)"
     
-    # Verify JNI symbols in JNI library
     if command -v nm &>/dev/null; then
         local JNI_COUNT=$(nm -D "$OUTPUT_DIR/libllama_jni.so" 2>/dev/null | grep -c "Java_com_ai" || echo 0)
         echo "  [Step 2] JNI functions in JNI lib: $JNI_COUNT"
         if [ "$JNI_COUNT" -eq 0 ]; then
-            echo "  WARNING: No JNI functions found in JNI library!"
+            echo "  WARNING: No JNI functions found!"
         fi
-        # Show DT_NEEDED entries
+    fi
+    if command -v readelf &>/dev/null; then
         echo "  [Step 2] DT_NEEDED:"
-        readelf -d "$OUTPUT_DIR/libllama_jni.so" 2>/dev/null | grep "NEEDED" || echo "    (readelf not available)"
+        readelf -d "$OUTPUT_DIR/libllama_jni.so" 2>/dev/null | grep "NEEDED" || echo "    (no readelf)"
     fi
     
-    # Cleanup temp CMakeLists
     rm -rf "$JNI_BUILD_DIR"
 }
 
