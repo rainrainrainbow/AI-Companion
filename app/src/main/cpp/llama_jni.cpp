@@ -7,15 +7,13 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
-// llama.cpp headers (pulled via CMake)
+// llama.cpp headers
 #include "llama.h"
-#include "common.h"
 
 // Per-instance context storage
 struct LlamaInstance {
     struct llama_model *model = nullptr;
     struct llama_context *ctx = nullptr;
-    struct llama_sampling *sampling = nullptr;
     llama_token *last_n_tokens = nullptr;
     int n_ctx = 2048;
     bool streaming = false;
@@ -25,7 +23,7 @@ struct LlamaInstance {
     // LoRA
     bool lora_loaded = false;
 
-    // Training (simplified - real LoRA training requires external lib)
+    // Training (simplified)
     bool training = false;
     float training_progress = 0.0f;
 };
@@ -83,32 +81,6 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeInit(
     return reinterpret_cast<jlong>(inst);
 }
 
-// ========== nativeEvaluate ==========
-extern "C" JNIEXPORT jintArray JNICALL
-Java_com_ai_companion_core_llm_LocalLLMEngine_nativeEvaluate(
-    JNIEnv *env, jobject /*thiz*/, jlong handle, jintArray tokens) {
-
-    auto *inst = reinterpret_cast<LlamaInstance*>(handle);
-    if (!inst || !inst->ctx) return nullptr;
-
-    jsize len = env->GetArrayLength(tokens);
-    jint *token_arr = env->GetIntArrayElements(tokens, nullptr);
-
-    std::vector<llama_token> input_tokens(len);
-    for (int i = 0; i < len; i++) input_tokens[i] = static_cast<llama_token>(token_arr[i]);
-
-    env->ReleaseIntArrayElements(tokens, token_arr, JNI_ABORT);
-
-    int n = llama_eval(inst->ctx, input_tokens.data(), (int)input_tokens.size(), 0, 1);
-    if (n < 0) return nullptr;
-
-    // Return logits as token IDs (simplified)
-    jintArray result = env->NewIntArray(1);
-    jint val = n;
-    env->SetIntArrayRegion(result, 0, 1, &val);
-    return result;
-}
-
 // ========== nativeGenerate ==========
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_ai_companion_core_llm_LocalLLMEngine_nativeGenerate(
@@ -127,7 +99,6 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeGenerate(
 
     // Generate
     std::string response;
-    int n_len = 0;
     int n_past = 0;
     int n_remain = max_tokens;
 
@@ -151,7 +122,6 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeGenerate(
         }
 
         response += llama_token_to_piece(inst->ctx, id);
-        n_len++;
         n_remain--;
 
         // Eval the new token
@@ -173,7 +143,6 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeGenerateStream(
     auto *inst = reinterpret_cast<LlamaInstance*>(handle);
     if (!inst || !inst->ctx) return JNI_FALSE;
 
-    // Same as generate but store response for streaming
     std::string prompt_str = jstring2string(env, prompt);
 
     int n_tokens = llama_tokenize(inst->model, prompt_str.c_str(), prompt_str.length(), nullptr, 0, true, false);
@@ -220,7 +189,6 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeGetNextToken(
         return env->NewStringUTF("<EOS>");
     }
 
-    // Return one character at a time for streaming
     std::string token(1, inst->pending_response[inst->stream_pos]);
     inst->stream_pos++;
     return env->NewStringUTF(token.c_str());
@@ -246,13 +214,12 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeLoadLoRA(
     std::string path = jstring2string(env, lora_path);
     LOGI("Loading LoRA adapter from %s", path.c_str());
 
-    // llama.cpp supports LoRA via llama_model_load
     bool success = llama_model_load_lora(inst->model, path.c_str(), scale);
     inst->lora_loaded = success;
     return success ? JNI_TRUE : JNI_FALSE;
 }
 
-// ========== nativeStartTraining ==========
+// ========== nativeStartTraining (simplified) ==========
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_ai_companion_core_llm_LocalLLMEngine_nativeStartTraining(
     JNIEnv *env, jobject /*thiz*/, jlong handle, jstring train_data,
@@ -264,8 +231,6 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeStartTraining(
     LOGI("Training start requested (rank=%d, alpha=%d, epochs=%d, batch=%d, lr=%f)",
          lora_rank, lora_alpha, epochs, batch_size, lr);
 
-    // Simplified: training requires external library
-    // For now, simulate progress
     inst->training = true;
     inst->training_progress = 0.0f;
     return JNI_TRUE;
@@ -279,7 +244,6 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeGetTrainingProgress(
     auto *inst = reinterpret_cast<LlamaInstance*>(handle);
     if (!inst) return 0.0f;
 
-    // Simulate training progress
     if (inst->training) {
         inst->training_progress += 0.05f;
         if (inst->training_progress >= 1.0f) {
@@ -290,7 +254,7 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeGetTrainingProgress(
     return inst->training_progress;
 }
 
-// ========== nativeSaveLoRA ==========
+// ========== nativeSaveLoRA (simplified) ==========
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_ai_companion_core_llm_LocalLLMEngine_nativeSaveLoRA(
     JNIEnv *env, jobject /*thiz*/, jlong handle, jstring output_path) {
@@ -301,7 +265,6 @@ Java_com_ai_companion_core_llm_LocalLLMEngine_nativeSaveLoRA(
     std::string path = jstring2string(env, output_path);
     LOGI("Saving LoRA adapter to %s", path.c_str());
 
-    // Simplified: actual LoRA saving needs training library
     return JNI_TRUE;
 }
 
