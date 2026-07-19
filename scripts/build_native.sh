@@ -1,5 +1,6 @@
 #!/bin/bash
-# Build llama.cpp + JNI wrapper for Android using CMake + NDK toolchain
+# Build llama.cpp core library for Android (WITHOUT JNI wrapper)
+# The JNI wrapper is built separately by Gradle's CMake
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,7 +14,7 @@ if [ -z "$ANDROID_NDK_HOME" ]; then
     for d in "$ANDROID_SDK_ROOT/ndk/"* "$ANDROID_HOME/ndk/"*; do
         [ -d "$d" ] && ANDROID_NDK_HOME="$d"
     done
-fi
+di
 echo "Using NDK: $ANDROID_NDK_HOME"
 
 TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
@@ -34,68 +35,6 @@ fi
 [ ! -f "$LLAMA_DIR/include/llama.h" ] && echo "ERROR: llama.h not found at $LLAMA_DIR/include/llama.h" && exit 1
 echo "llama.cpp structure OK"
 
-# Copy JNI wrapper into llama.cpp source tree - put it in src/ so it's with the other sources
-JNI_SRC="$REPO_DIR/app/src/main/cpp/llama_jni.cpp"
-cp "$JNI_SRC" "$LLAMA_DIR/src/llama_jni.cpp"
-echo "Copied JNI wrapper to $LLAMA_DIR/src/llama_jni.cpp"
-
-# ============================================================
-# CRITICAL FIX: Add llama_jni.cpp to the llama target in src/CMakeLists.txt
-# The add_library(llama ...) is defined in src/CMakeLists.txt
-# ============================================================
-SRC_CMAKE="$LLAMA_DIR/src/CMakeLists.txt"
-echo "Patching $SRC_CMAKE..."
-
-if grep -q "llama_jni.cpp" "$SRC_CMAKE" 2>/dev/null; then
-    echo "  llama_jni.cpp already in src/CMakeLists.txt"
-else
-    echo "  Adding llama_jni.cpp to src/CMakeLists.txt..."
-    
-    # Use sed to insert after the first source file line in the add_library(llama block
-    # The file typically has: add_library(llama\n  llama.cpp\n  llama-adapter.cpp\n  ...)
-    # Insert after 'llama.cpp' line
-    sed -i '/^    llama\.cpp$/a\    llama_jni.cpp' "$SRC_CMAKE"
-    
-    # Verify
-    if grep -q "llama_jni.cpp" "$SRC_CMAKE" 2>/dev/null; then
-        echo "  SUCCESS: llama_jni.cpp added to src/CMakeLists.txt"
-        grep -n "llama_jni" "$SRC_CMAKE"
-    else
-        echo "  sed failed, trying python fallback..."
-        python3 -c "
-path = '$SRC_CMAKE'
-with open(path, 'r') as f:
-    content = f.read()
-
-# Find the add_library(llama block and insert llama_jni.cpp
-idx = content.find('add_library(llama')
-if idx >= 0:
-    # Find the closing parenthesis
-    depth = 0
-    for i in range(idx, len(content)):
-        if content[i] == '(':
-            depth += 1
-        elif content[i] == ')':
-            depth -= 1
-            if depth == 0:
-                content = content[:i] + '\\n    llama_jni.cpp' + content[i:]
-                break
-    
-    with open(path, 'w') as f:
-        f.write(content)
-    
-    if 'llama_jni.cpp' in content:
-        print('SUCCESS: llama_jni.cpp added via python fallback')
-    else:
-        print('ERROR: Failed to add llama_jni.cpp')
-        exit(1)
-else:
-    print('ERROR: add_library(llama not found in src/CMakeLists.txt')
-    exit(1)
-"
-    fi
-fi
-
 build_abi() {
     local ABI=$1
     local OUTPUT_DIR="$REPO_DIR/app/src/main/jniLibs/$ABI"
@@ -108,7 +47,7 @@ build_abi() {
     rm -rf "$BUILD_DIR"
     mkdir -p "$BUILD_DIR"
 
-    echo "  Configuring llama.cpp with JNI wrapper..."
+    echo "  Configuring llama.cpp (core only, no JNI)..."
     cmake -S "$LLAMA_DIR" -B "$BUILD_DIR" \
         -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
         -DANDROID_ABI="$ABI" \
@@ -137,18 +76,17 @@ build_abi() {
     local SIZE=$(stat -c%s "$OUTPUT_DIR/libllama.so" 2>/dev/null || echo 0)
     echo "  Output: $OUTPUT_DIR/libllama.so ($((SIZE/1024))KB)"
     
-    # Verify JNI symbols
+    # Verify NO JNI symbols (JNI is in separate library now)
     if command -v nm &>/dev/null; then
         local JNI_COUNT=$(nm -D "$OUTPUT_DIR/libllama.so" 2>/dev/null | grep -c "Java_com_ai" || echo 0)
-        echo "  JNI functions found in .so: $JNI_COUNT"
-        if [ "$JNI_COUNT" -eq 0 ]; then
-            echo "  WARNING: No JNI functions found!"
-        fi
+        echo "  JNI functions in core lib: $JNI_COUNT (expected 0)"
     fi
 }
 
 build_abi "arm64-v8a"
 
 echo ""
-echo "✅ Native libraries built successfully!"
+echo "✅ Native core library built successfully!"
 echo "  - app/src/main/jniLibs/arm64-v8a/libllama.so"
+echo ""
+echo "Note: JNI wrapper library (libllama_jni.so) will be built by Gradle's CMake"
